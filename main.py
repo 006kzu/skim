@@ -189,12 +189,14 @@ def dashboard():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title='Peripheral News', native=False)
-
-if __name__ in {"__main__", "__mp_main__"}:
     # Render provides the port in the 'PORT' environment variable
-    # We default to 8080 if running locally
     port = int(os.environ.get("PORT", 8080))
 
-    # We remove 'native=False' and bind to 0.0.0.0 (required for cloud servers)
-    ui.run(title='Peripheral News', port=port, host='0.0.0.0')
+    # UPDATE THESE LINES:
+    ui.run(
+        title='Skim',                  # 1. Changes the Tab Name
+        # 2. Changes the Tab Logo (ensure file exists)
+        favicon='assets/logo.png',
+        port=port,
+        host='0.0.0.0'
+    )
