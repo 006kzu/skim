@@ -1,0 +1,31 @@
+name: Nightly Research Scout
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # Runs at 6am UTC
+  workflow_dispatch:
+
+jobs:
+  scout-cloud-update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests arxiv google-generativeai pydantic python-dotenv schedule nicegui supabase
+
+      - name: Run Scout Agent
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python nightly_scout.py

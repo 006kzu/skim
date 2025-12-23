@@ -2,6 +2,7 @@ from nicegui import ui, run, app
 import scholar_api
 import database
 import topics
+import os
 
 # --- INITIALIZATION ---
 database.init_db()
@@ -189,3 +190,11 @@ def dashboard():
 
 if __name__ in {"__main__", "__mp_main__"}:
     ui.run(title='Peripheral News', native=False)
+
+if __name__ in {"__main__", "__mp_main__"}:
+    # Render provides the port in the 'PORT' environment variable
+    # We default to 8080 if running locally
+    port = int(os.environ.get("PORT", 8080))
+
+    # We remove 'native=False' and bind to 0.0.0.0 (required for cloud servers)
+    ui.run(title='Peripheral News', port=port, host='0.0.0.0')

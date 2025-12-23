@@ -1,93 +1,101 @@
-import sqlite3
+import os
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
-DB_NAME = "skim.db"
+# Load env variables (for local testing)
+load_dotenv()
+
+url = os.environ.get("SUPABASE_URL")
+key = os.environ.get("SUPABASE_KEY")
+
+# Initialize Client
+# If keys are missing (e.g. GitHub Actions didn't load secrets yet), this handles it gracefully
+if url and key:
+    supabase: Client = create_client(url, key)
+else:
+    supabase = None
+    print("⚠️ WARNING: Supabase keys not found. Database features will fail.")
 
 
 def init_db():
-    """Creates the table with the new 'topic' column."""
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS papers (
-            id TEXT PRIMARY KEY,
-            title TEXT,
-            url TEXT,
-            summary TEXT,
-            score INTEGER,
-            category TEXT,
-            topic TEXT,
-            date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    """
+    Legacy compatibility. 
+    Supabase tables are created via the web dashboard SQL editor, 
+    so we don't need to create tables here anymore.
+    """
+    pass
 
 
 def save_paper(paper, search_topic):
-    """Saves a paper and tags it with the Search Topic (e.g. 'Bionics')."""
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
+    """Saves a paper to Supabase Cloud."""
+    if not supabase:
+        return
+
+    data = {
+        "id": paper['title'],  # Unique ID
+        "title": paper['title'],
+        "url": paper['link'],
+        "summary": paper['summary'],
+        "score": paper['score'],
+        "category": paper['category'],
+        "topic": search_topic
+    }
+
     try:
-        c.execute('''
-            INSERT OR IGNORE INTO papers (id, title, url, summary, score, category, topic)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            paper['title'],
-            paper['title'],
-            paper['link'],
-            paper['summary'],
-            paper['score'],
-            paper['category'],  # The AI's specific sub-category
-            search_topic       # The broad Sidebar topic
-        ))
-        conn.commit()
+        # .upsert() inserts, or updates if the ID already exists
+        response = supabase.table("papers").upsert(data).execute()
     except Exception as e:
-        print(f"DB Error: {e}")
-    finally:
-        conn.close()
+        print(f"☁️ Cloud DB Error: {e}")
 
 
 def get_papers_by_topic(topic, limit=10):
-    """Fetches papers specifically for the clicked sidebar topic."""
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute('''
-        SELECT * FROM papers 
-        WHERE topic = ? 
-        ORDER BY date_added DESC LIMIT ?
-    ''', (topic, limit))
-    rows = c.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    """Fetches papers for a specific topic."""
+    if not supabase:
+        return []
 
-
-def get_recent_papers(limit=10):
-    """Fallback for the main page (mixed feed)."""
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute('SELECT * FROM papers ORDER BY date_added DESC LIMIT ?', (limit,))
-    rows = c.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    try:
+        response = supabase.table("papers") \
+            .select("*") \
+            .eq("topic", topic) \
+            .order("date_added", desc=True) \
+            .limit(limit) \
+            .execute()
+        return response.data
+    except Exception as e:
+        print(f"Error fetching topic: {e}")
+        return []
 
 
 def get_top_rated_papers(limit=8):
-    """
-    Fetches the absolute highest-scoring papers across ALL topics.
-    Sorts by Score first, then Recency.
-    """
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    # Logic: Get papers with score >= 7, sorted by score (descending), then date
-    c.execute('''
-        SELECT * FROM papers 
-        WHERE score >= 7 
-        ORDER BY score DESC, date_added DESC 
-        LIMIT ?
-    ''', (limit,))
-    rows = c.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    """Fetches the global top hits (Score >= 7)."""
+    if not supabase:
+        return []
+
+    try:
+        response = supabase.table("papers") \
+            .select("*") \
+            .gte("score", 7) \
+            .order("score", desc=True) \
+            .order("date_added", desc=True) \
+            .limit(limit) \
+            .execute()
+        return response.data
+    except Exception as e:
+        print(f"Error fetching top hits: {e}")
+        return []
+
+
+def get_recent_papers(limit=10):
+    """Fallback fetch."""
+    if not supabase:
+        return []
+
+    try:
+        response = supabase.table("papers") \
+            .select("*") \
+            .order("date_added", desc=True) \
+            .limit(limit) \
+            .execute()
+        return response.data
+    except Exception as e:
+        return []

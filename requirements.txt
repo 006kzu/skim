@@ -1,0 +1,8 @@
+nicegui
+google-generativeai
+arxiv
+requests
+python-dotenv
+supabase
+schedule
+pydantic
