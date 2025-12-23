@@ -1,5 +1,5 @@
 nicegui
-google-generativeai
+google-genai
 arxiv
 requests
 python-dotenv
