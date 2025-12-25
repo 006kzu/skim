@@ -6,3 +6,4 @@ python-dotenv
 supabase
 schedule
 pydantic
+psycopg2-binary
