@@ -27,5 +27,6 @@ jobs:
       - name: Run python nightly_scout.py
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python nightly_scout.py
