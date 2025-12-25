@@ -3,11 +3,32 @@ import datetime
 import random
 import time
 import arxiv
+from typing import List
 import os
 from google import genai
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import topics  # <--- NEW IMPORT
+import json
+
+# --- ADD THIS HELPER FUNCTION ---
+
+
+def clean_and_parse_json(raw_text):
+    """
+    Cleans AI response text to remove Markdown (```json) 
+    and returns a safe dictionary.
+    """
+    # 1. Remove markdown code blocks if present
+    clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+
+    # 2. Try to parse the cleaned text
+    try:
+        return json.loads(clean_text)
+    except json.JSONDecodeError:
+        print(f"⚠️ JSON PARSING FAILED. Raw text received:\n{raw_text}")
+        return {}
+
 
 load_dotenv()
 
@@ -21,6 +42,21 @@ else:
 client = genai.Client(api_key=api_key)
 
 # --- DATA STRUCTURES ---
+
+
+class QuickPaperReview(BaseModel):
+    score: int = Field(
+        description="Score 1-10 based on wider population impact.")
+    is_major: bool = Field(
+        description="True ONLY if the research fundamentally changes how we interact with the world.")
+    layman_summary: str = Field(
+        description="A catchy, 1-sentence news-style headline.")
+    category: str = Field(description="The specific sub-field.")
+    # --- NEW FIELDS ---
+    key_findings: List[str] = Field(
+        description="3-5 bullet points of specific statistics, metrics, or core results (e.g. '95% accuracy', '2x faster').")
+    implications: List[str] = Field(
+        description="2-3 bullet points on the practical, real-world consequences of this finding.")
 
 
 class QuickPaperReview(BaseModel):
@@ -59,47 +95,45 @@ def fetch_with_retry(url, params, retries=3, backoff_factor=2):
     return []
 
 
+class QuickPaperReview(BaseModel):
+    score: int = Field(
+        description="Relevance score from 1-10 based on the 'Filter' criteria")
+    layman_summary: str = Field(
+        description="A simplified summary of the paper")
+    key_findings: str = Field(
+        description="Specific numbers or results extracted from the abstract")
+    implications: str = Field(
+        description="Real-world applications enabled by this research")
+    # --- ADD THIS LINE ---
+    category: str = Field(
+        description="A single-word category for the paper (e.g. 'Robotics', 'Neuroscience', 'Materials')")
+
+
 def evaluate_paper(paper):
-    """
-    Your 'Ruthless Editor' Logic.
-    """
     if not paper.get('abstract'):
         return None
 
-    venue = paper.get('venue') or "Unknown"
     print(f"🤖 AI Reviewing: '{paper['title'][:50]}...'")
 
     prompt = f"""
     You are a ruthless Scientific Editor for "Peripheral News."
-    Your Goal: Prioritize the reader's time by filtering out insignificant research.
-
-    ### THE GOLDEN RULE OF SIGNIFICANCE
-    To determine if a paper is worth reading, you must ask this specific question:
-    "Does this impact affect the population OUTSIDE of this specific domain, or does it help experts in this domain DIRECTLY impact the outside population?"
-
-    ### SCORING RUBRIC (1-10)
     
-    **SCORES 1-5: INSIGNIFICANT (REJECT)**
-    - Criteria: The impact is trapped inside the domain.
-    
-    **SCORE 6: DOMAIN RELEVANT (BORDERLINE)**
-    - Criteria: Solid science, but the downstream impact on humanity is vague or too distant.
-    
-    **SCORE 7: IMPACTFUL (PUBLISH)**
-    - Criteria: Clear potential to affect the outside world.
-
-    **SCORES 8-10: TRANSFORMATIVE (MAJOR INNOVATION)**
-    - Criteria: A breakthrough that will undeniably change safety, health, energy, or understanding of the universe.
-
-    ### YOUR TASK
-    Analyze the paper below. If it is "Insignificant," score it low (1-5). If it passes the Golden Rule, score it high (7+).
-    
-    Paper Data:
+    Analyze this paper based on the following data:
     - Title: {paper['title']}
-    - Venue: {venue}
     - Abstract: {paper['abstract']}
     
-    Output JSON.
+    ### TASK 1: THE FILTER (Score 1-10)
+    Assign a 'score' based on impact:
+    - 1-5: Insignificant (Internal academic chatter).
+    - 6-7: Impactful (Real-world usage).
+    - 8-10: Transformative (Civilization-level shift).
+
+    ### TASK 2: EXTRACTION
+    Extract these details:
+    1. 'key_findings': Specific numbers or results.
+    2. 'implications': What does this enable?
+    3. 'layman_summary': A simple summary.
+    4. 'category': Classify into one domain (e.g. Bionics, AI, Materials). <--- ADD THIS
     """
 
     try:
@@ -108,12 +142,20 @@ def evaluate_paper(paper):
             contents=prompt,
             config={
                 'response_mime_type': 'application/json',
-                'response_schema': QuickPaperReview,
+                'response_schema': QuickPaperReview,  # <--- Uses the class defined above
             }
         )
+        # The SDK automatically parses the JSON into your Pydantic model
         result = response.parsed.model_dump()
-        print(f"   ↳ Score: {result['score']}/10 | Cat: {result['category']}")
+
+        # Now these keys are guaranteed to exist
+        if result['score'] >= 7:
+            print(
+                f"   🔥 HIGH IMPACT (Score {result['score']}): {result['layman_summary']}")
+            print(f"      Findings: {result['key_findings']}")
+
         return result
+
     except Exception as e:
         print(f"❌ AI Review failed: {e}")
         return None
@@ -152,16 +194,19 @@ def get_curated_feed(topic=None, limit=5):
 
         if review and review['score'] >= 7:
             print("   🔥 KEEPING PAPER (High Impact)")
-            paper['ai_data'] = review
             curated_papers.append({
                 "title": paper['title'],
                 "date": paper.get('publicationDate', 'Recent'),
                 "authors": ", ".join([a['name'] for a in paper.get('authors', [])[:2]]),
                 "summary": review['layman_summary'],
-                "link": paper.get('url'),
+                "url": paper.get('url'),
                 "journal": paper.get('venue') or "Journal",
                 "score": review['score'],
-                "category": review['category']
+                "category": review['category'],
+                "paperId": paper.get('paperId'),
+                # --- SAVE NEW DATA ---
+                "key_findings": review.get('key_findings', "No key findings available"),
+                "implications": review.get('implications', "No implications available")
             })
         else:
             print("   🗑️ Discarding (Low Impact)")

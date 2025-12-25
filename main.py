@@ -55,19 +55,44 @@ def display_arxiv_card(container, paper):
 def display_curated_card(container, paper):
     with container:
         with ui.card().classes('w-full border-l-4 border-teal-500 shadow-sm'):
+            # ... (Header Row with Score & Category stays same) ...
             with ui.row().classes('justify-between w-full'):
                 ui.label(paper['category']).classes(
                     'text-xs font-bold text-teal-600 uppercase tracking-wide')
                 ui.badge(f"Score: {paper['score']}/10",
                          color='teal').props('outline')
+
+            # Title & Summary
             ui.label(paper['summary']).classes(
                 'text-lg font-bold leading-tight mt-2 text-slate-900')
             ui.label(paper['title']).classes(
                 'text-xs text-slate-400 mt-2 italic')
+
+            # --- NEW: RESEARCHER SKIM SECTION ---
+            # Check if we have the data (old papers might not have it)
+            if paper.get('key_findings'):
+                with ui.expansion('Key Findings & Implications', icon='science').classes('w-full mt-2 text-slate-600 bg-slate-50 rounded'):
+                    with ui.column().classes('p-2'):
+                        # Findings
+                        ui.label('Key Findings').classes(
+                            'text-xs font-bold text-teal-700 uppercase')
+                        for point in paper['key_findings']:
+                            ui.label(f"• {point}").classes(
+                                'text-sm text-slate-800 ml-2')
+
+                        ui.separator().classes('my-2')
+
+                        # Implications
+                        ui.label('Real World Impact').classes(
+                            'text-xs font-bold text-teal-700 uppercase')
+                        for point in paper['implications']:
+                            ui.label(f"• {point}").classes(
+                                'text-sm text-slate-800 ml-2')
+
+            # Footer (Link Button)
             with ui.row().classes('mt-4 w-full justify-end'):
                 ui.button('Read Source', icon='link', on_click=lambda: ui.open(
                     paper['link'] or paper['url'], new_tab=True)).props('flat dense color=grey')
-
 # --- LAYOUT & PAGES ---
 
 
