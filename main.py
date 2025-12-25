@@ -70,16 +70,25 @@ def display_curated_card(container, paper):
 
             # --- NEW: RESEARCHER SKIM SECTION ---
             # Check if we have the data (old papers might not have it)
+           # --- NEW: RESEARCHER SKIM SECTION ---
             if paper.get('key_findings'):
                 with ui.expansion('Key Findings & Implications', icon='science').classes('w-full mt-2 text-slate-600 bg-slate-50 rounded'):
-                    with ui.column().classes('p-2'):
+                    with ui.column().classes('p-4'):  # Added padding
+
                         # Findings
                         ui.label('Key Findings').classes(
-                            'text-xs font-bold text-teal-700 uppercase')
-                        for point in paper['key_findings']:
-                            ui.label(f"• {point}").classes(
-                                'text-sm text-slate-800 ml-2')
+                            'text-xs font-bold text-teal-700 uppercase mb-1')
+                        # Use markdown to handle the text block correctly
+                        ui.markdown(paper['key_findings']).classes(
+                            'text-sm text-slate-800 leading-relaxed')
 
+                        ui.separator().classes('my-3')
+
+                        # Implications
+                        ui.label('Real World Impact').classes(
+                            'text-xs font-bold text-teal-700 uppercase mb-1')
+                        ui.markdown(paper['implications']).classes(
+                            'text-sm text-slate-800 leading-relaxed')
                         ui.separator().classes('my-2')
 
                         # Implications
