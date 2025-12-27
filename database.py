@@ -9,7 +9,6 @@ url = os.environ.get("SUPABASE_URL")
 key = os.environ.get("SUPABASE_KEY")
 
 # Initialize Client
-# If keys are missing (e.g. GitHub Actions didn't load secrets yet), this handles it gracefully
 if url and key:
     supabase: Client = create_client(url, key)
 else:
@@ -20,8 +19,7 @@ else:
 def init_db():
     """
     Legacy compatibility. 
-    Supabase tables are created via the web dashboard SQL editor, 
-    so we don't need to create tables here anymore.
+    Supabase tables are created via the web dashboard SQL editor.
     """
     pass
 
@@ -29,26 +27,49 @@ def init_db():
 def save_paper(paper, search_topic):
     """Saves a paper to Supabase Cloud."""
     if not supabase:
+        print("❌ DB Error: No connection.")
         return
 
-    data = {
-        "id": paper['title'],  # Unique ID
-        "title": paper['title'],
-        "url": paper['link'],
-        "summary": paper['summary'],
-        "score": paper['score'],
-        "category": paper['category'],
-        "topic": search_topic
-    }
+    # 1. PREPARE THE DATA
+    # We want to send the WHOLE paper object, not just a few fields.
+    data = paper.copy()
 
+    # 2. ADD TOPIC
+    data['topic'] = search_topic
+
+    # 3. SAFETY CHECKS (Fixing the keys)
+    # The API returns 'url', but sometimes your code might look for 'link'
+    if 'link' in data and 'url' not in data:
+        data['url'] = data.pop('link')  # Rename link -> url
+
+    # Ensure 'url' isn't None (DB requires text usually)
+    if not data.get('url'):
+        # Fallback if paperId exists
+        if data.get('paperId'):
+            data['url'] = f"https://www.semanticscholar.org/paper/{data['paperId']}"
+        else:
+            data['url'] = ""
+
+    # 4. REMOVE ID (Critical Fix)
+    # We MUST delete the 'id' field so Supabase generates a new UUID.
+    # If we send a title as an ID, it crashes on duplicates.
+    if 'id' in data:
+        del data['id']
+
+    # 5. INSERT
     try:
-        # .upsert() inserts, or updates if the ID already exists
-        response = supabase.table("papers").upsert(data).execute()
+        # We use .insert() instead of upsert so we can catch duplicates via the Unique constraint on Title
+        response = supabase.table("papers").insert(data).execute()
+        print(f"   ✅ DB Saved: {data['title'][:30]}...")
     except Exception as e:
-        print(f"☁️ Cloud DB Error: {e}")
+        # Ignore duplicate errors, print others
+        if "duplicate key" in str(e):
+            print(f"   ⚠️ Skipped (Already in DB): {data['title'][:20]}...")
+        else:
+            print(f"   ☁️ Cloud DB Error: {e}")
 
 
-def get_papers_by_topic(topic, limit=10):
+def get_papers_by_topic(topic, limit=20):
     """Fetches papers for a specific topic."""
     if not supabase:
         return []
@@ -57,7 +78,7 @@ def get_papers_by_topic(topic, limit=10):
         response = supabase.table("papers") \
             .select("*") \
             .eq("topic", topic) \
-            .order("date_added", desc=True) \
+            .order("created_at", desc=True) \
             .limit(limit) \
             .execute()
         return response.data
@@ -76,26 +97,9 @@ def get_top_rated_papers(limit=8):
             .select("*") \
             .gte("score", 7) \
             .order("score", desc=True) \
-            .order("date_added", desc=True) \
             .limit(limit) \
             .execute()
         return response.data
     except Exception as e:
         print(f"Error fetching top hits: {e}")
-        return []
-
-
-def get_recent_papers(limit=10):
-    """Fallback fetch."""
-    if not supabase:
-        return []
-
-    try:
-        response = supabase.table("papers") \
-            .select("*") \
-            .order("date_added", desc=True) \
-            .limit(limit) \
-            .execute()
-        return response.data
-    except Exception as e:
         return []

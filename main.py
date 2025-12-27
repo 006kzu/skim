@@ -78,9 +78,9 @@ def display_curated_card(container, paper):
                         # Findings
                         ui.label('Key Findings').classes(
                             'text-xs font-bold text-teal-700 uppercase mb-1')
-                        # Use markdown to handle the text block correctly
-                        ui.markdown(paper['key_findings']).classes(
-                            'text-sm text-slate-800 leading-relaxed')
+                        for point in paper['key_findings']:
+                            ui.label(f"• {point}").classes(
+                                'text-sm text-slate-800 ml-2')
 
                         ui.separator().classes('my-3')
 
@@ -90,13 +90,6 @@ def display_curated_card(container, paper):
                         ui.markdown(paper['implications']).classes(
                             'text-sm text-slate-800 leading-relaxed')
                         ui.separator().classes('my-2')
-
-                        # Implications
-                        ui.label('Real World Impact').classes(
-                            'text-xs font-bold text-teal-700 uppercase')
-                        for point in paper['implications']:
-                            ui.label(f"• {point}").classes(
-                                'text-sm text-slate-800 ml-2')
 
             # Footer (Link Button)
             with ui.row().classes('mt-4 w-full justify-end'):
