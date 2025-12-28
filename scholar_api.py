@@ -250,3 +250,64 @@ def analyze_with_ai(paper_title, paper_abstract):
     except Exception as e:
         print(f"❌ Skim Error: {e}")
         return f"Error: {e}"
+
+
+def get_historical_feed(topic, year_start=2015, limit=5):
+    """
+    Fetches the most HIGHLY CITED papers for a topic within a year range.
+    Used for populating the database with historical hits.
+    """
+    print(
+        f"\n🏛️ HISTORICAL ARCHIVE: Scouting '{topic}' ({year_start}-Present)...")
+
+    # Reuse the correct URL (ensure it's a clean string)
+    url = "https://api.semanticscholar.org/graph/v1/paper/search"
+    current_year = datetime.datetime.now().year
+
+    params = {
+        "query": topic,
+        "year": f"{year_start}-{current_year}",
+        # KEY CHANGE: Sort by CITATIONS to find "Influential" papers
+        "sort": "citationCount:desc",
+        "fields": "title,abstract,url,publicationDate,venue,authors,paperId,citationCount",
+        "limit": limit * 2
+    }
+
+    # Reuse your existing robust fetch function
+    raw_papers = fetch_with_retry(url, params)
+    curated_papers = []
+
+    for paper in raw_papers:
+        if not paper.get('abstract'):
+            continue
+
+        # We run the same AI evaluation to get the summary/findings
+        review = evaluate_paper(paper)
+
+        # We accept Score >= 6 for historical classics (sometimes older papers are drier but vital)
+        if review and review['score'] >= 6:
+            print(
+                f"   🏛️ KEEPING CLASSIC (Cited {paper.get('citationCount', '?')} times)")
+
+            author_list = paper.get('authors', [])
+            author_str = ", ".join(
+                [a['name'] for a in author_list[:2]]) if author_list else "Unknown"
+
+            curated_papers.append({
+                "title": paper['title'],
+                "date": paper.get('publicationDate', 'Recent'),
+                "authors": author_str,
+                "summary": review['layman_summary'],
+                "url": paper.get('url'),
+                "journal": paper.get('venue') or "Journal",
+                "score": review['score'],
+                "category": review['category'],
+                "paperId": paper.get('paperId'),
+                "key_findings": review.get('key_findings', []),
+                "implications": review.get('implications', [])
+            })
+
+        if len(curated_papers) >= limit:
+            break
+
+    return curated_papers

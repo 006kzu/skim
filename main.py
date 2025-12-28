@@ -55,27 +55,26 @@ def display_arxiv_card(container, paper):
 def display_curated_card(container, paper):
     with container:
         with ui.card().classes('w-full border-l-4 border-teal-500 shadow-sm'):
-            # ... (Header Row with Score & Category stays same) ...
+            # Header
             with ui.row().classes('justify-between w-full'):
-                ui.label(paper['category']).classes(
+                ui.label(paper.get('category', 'General')).classes(
                     'text-xs font-bold text-teal-600 uppercase tracking-wide')
-                ui.badge(f"Score: {paper['score']}/10",
+                ui.badge(f"Score: {paper.get('score', '?')}/10",
                          color='teal').props('outline')
 
             # Title & Summary
-            ui.label(paper['summary']).classes(
+            ui.label(paper.get('summary', 'No summary')).classes(
                 'text-lg font-bold leading-tight mt-2 text-slate-900')
             ui.label(paper['title']).classes(
                 'text-xs text-slate-400 mt-2 italic')
 
-            # --- NEW: RESEARCHER SKIM SECTION ---
-            # Check if we have the data (old papers might not have it)
-           # --- NEW: RESEARCHER SKIM SECTION ---
+            # --- SKIM SECTION ---
+            # Use .get() to safely check for data
             if paper.get('key_findings'):
                 with ui.expansion('Key Findings & Implications', icon='science').classes('w-full mt-2 text-slate-600 bg-slate-50 rounded'):
-                    with ui.column().classes('p-4'):  # Added padding
+                    with ui.column().classes('p-4'):
 
-                        # Findings
+                        # 1. Findings (Loop)
                         ui.label('Key Findings').classes(
                             'text-xs font-bold text-teal-700 uppercase mb-1')
                         for point in paper['key_findings']:
@@ -84,18 +83,28 @@ def display_curated_card(container, paper):
 
                         ui.separator().classes('my-3')
 
-                        # Implications
+                        # 2. Implications (FIXED: Loop instead of Markdown)
                         ui.label('Real World Impact').classes(
                             'text-xs font-bold text-teal-700 uppercase mb-1')
-                        ui.markdown(paper['implications']).classes(
-                            'text-sm text-slate-800 leading-relaxed')
-                        ui.separator().classes('my-2')
 
-            # Footer (Link Button)
+                        # Check if it's a list (New Data) or String (Old Data)
+                        implications = paper.get('implications', [])
+                        if isinstance(implications, list):
+                            for point in implications:
+                                ui.label(f"• {point}").classes(
+                                    'text-sm text-slate-800 ml-2')
+                        else:
+                            # Fallback for old string data
+                            ui.markdown(str(implications)).classes(
+                                'text-sm text-slate-800 leading-relaxed')
+
+            # Footer
+            # Use .get('link') to prevent KeyErrors if 'link' is missing
+            url = paper.get('url') or paper.get('link')
             with ui.row().classes('mt-4 w-full justify-end'):
-                ui.button('Read Source', icon='link', on_click=lambda: ui.open(
-                    paper['link'] or paper['url'], new_tab=True)).props('flat dense color=grey')
-# --- LAYOUT & PAGES ---
+                if url:
+                    ui.button('Read Source', icon='link', on_click=lambda: ui.open(
+                        url, new_tab=True)).props('flat dense color=grey')
 
 
 def header():
@@ -171,7 +180,7 @@ def dashboard():
         render_feed(papers, f'Topic: {topic}')
 
     def load_home_feed():
-        top_papers = database.get_top_rated_papers(limit=8)
+        top_papers = database.get_top_rated_papers(limit=12)
         render_feed(top_papers, 'Global Top Hits (Recent)')
 
     sidebar(on_topic_click=load_topic_feed)
