@@ -38,8 +38,11 @@ def display_arxiv_card(container, paper):
                 'text-sm text-slate-800 bg-teal-50 p-4 rounded-lg hidden mt-2 w-full')
             ui.separator().classes('mt-4 mb-2')
             with ui.row().classes('w-full justify-between items-center'):
-                ui.button('PDF', icon='open_in_new', on_click=lambda: ui.open(
-                    paper['link'], new_tab=True)).props('flat dense color=grey')
+
+                # FIXED: Capture URL in lambda to ensure link works
+                url = paper.get('link')
+                ui.button('PDF', icon='open_in_new', on_click=lambda url=url: ui.open(
+                    url, new_tab=True)).props('flat dense color=grey')
 
                 async def run_ai_skim():
                     skim_btn.props('loading')
@@ -54,11 +57,23 @@ def display_arxiv_card(container, paper):
 
 def display_curated_card(container, paper):
     with container:
-        with ui.card().classes('w-full border-l-4 border-teal-500 shadow-sm'):
+        # UPDATED: Added 'group' class to enable hover effects on children
+        with ui.card().classes('w-full border-l-4 border-teal-500 shadow-sm group hover:shadow-md transition-all duration-300'):
             # Header
-            with ui.row().classes('justify-between w-full'):
-                ui.label(paper.get('category', 'General')).classes(
-                    'text-xs font-bold text-teal-600 uppercase tracking-wide')
+            with ui.row().classes('justify-between w-full items-start'):
+                # UPDATED: Added Category Icon (Image)
+                category = paper.get('category', 'General')
+                icon_src = CATEGORY_ICONS.get(category, None)
+
+                with ui.row().classes('items-center gap-2'):
+                    if icon_src:
+                        # Clean up "img:" prefix for ui.image
+                        clean_src = icon_src.replace('img:', '')
+                        ui.image(clean_src).classes('w-6 h-6 opacity-70')
+
+                    ui.label(category).classes(
+                        'text-xs font-bold text-teal-600 uppercase tracking-wide')
+
                 ui.badge(f"Score: {paper.get('score', '?')}/10",
                          color='teal').props('outline')
 
@@ -68,43 +83,48 @@ def display_curated_card(container, paper):
             ui.label(paper['title']).classes(
                 'text-xs text-slate-400 mt-2 italic')
 
-            # --- SKIM SECTION ---
-            # Use .get() to safely check for data
-            if paper.get('key_findings'):
-                with ui.expansion('Key Findings & Implications', icon='science').classes('w-full mt-2 text-slate-600 bg-slate-50 rounded'):
-                    with ui.column().classes('p-4'):
+            # --- HOVER SECTION (Key Findings) ---
+            # UPDATED: Hidden by default, Block on group-hover
+            # This creates the "opens up on hover" effect
+            with ui.column().classes('hidden group-hover:block w-full mt-4 bg-teal-50/50 p-4 rounded border border-teal-100 transition-all'):
 
-                        # 1. Findings (Loop)
-                        ui.label('Key Findings').classes(
-                            'text-xs font-bold text-teal-700 uppercase mb-1')
-                        for point in paper['key_findings']:
-                            ui.label(f"• {point}").classes(
-                                'text-sm text-slate-800 ml-2')
+                # 1. Findings
+                ui.label('Key Findings').classes(
+                    'text-xs font-bold text-teal-700 uppercase mb-1')
 
-                        ui.separator().classes('my-3')
+                findings = paper.get('key_findings', [])
+                if findings:
+                    for point in findings:
+                        ui.label(f"• {point}").classes(
+                            'text-sm text-slate-800 ml-2 leading-snug mb-1')
+                else:
+                    ui.label("No specific data points extracted.").classes(
+                        'text-sm text-slate-400 italic')
 
-                        # 2. Implications (FIXED: Loop instead of Markdown)
-                        ui.label('Real World Impact').classes(
-                            'text-xs font-bold text-teal-700 uppercase mb-1')
+                ui.separator().classes('my-3 bg-teal-200')
 
-                        # Check if it's a list (New Data) or String (Old Data)
-                        implications = paper.get('implications', [])
-                        if isinstance(implications, list):
-                            for point in implications:
-                                ui.label(f"• {point}").classes(
-                                    'text-sm text-slate-800 ml-2')
-                        else:
-                            # Fallback for old string data
-                            ui.markdown(str(implications)).classes(
-                                'text-sm text-slate-800 leading-relaxed')
+                # 2. Implications
+                ui.label('Real World Impact').classes(
+                    'text-xs font-bold text-teal-700 uppercase mb-1')
+
+                implications = paper.get('implications', [])
+                if isinstance(implications, list):
+                    for point in implications:
+                        ui.label(f"• {point}").classes(
+                            'text-sm text-slate-800 ml-2 leading-snug mb-1')
+                else:
+                    ui.markdown(str(implications)).classes(
+                        'text-sm text-slate-800 leading-relaxed')
 
             # Footer
-            # Use .get('link') to prevent KeyErrors if 'link' is missing
             url = paper.get('url') or paper.get('link')
-            with ui.row().classes('mt-4 w-full justify-end'):
-                if url:
-                    ui.button('Read Source', icon='link', on_click=lambda: ui.open(
-                        url, new_tab=True)).props('flat dense color=grey')
+
+            # FIXED: Link button logic
+            if url:
+                with ui.row().classes('mt-4 w-full justify-end'):
+                    # Explicitly capturing 'url' in lambda to prevent variable overwriting in loops
+                    ui.button('Read Source', icon='link',
+                              on_click=lambda url=url: ui.open(url, new_tab=True)).props('flat dense color=teal')
 
 
 def header():
@@ -134,13 +154,14 @@ def sidebar(on_topic_click):
             icon_file = CATEGORY_ICONS.get(hub_name, 'hub')
             with ui.expansion(hub_name, icon=icon_file).classes('w-full text-slate-800 font-bold'):
                 for topic in topic_list:
+                    # UPDATED: Text color changed to text-teal-600
                     ui.button(topic).props('flat align=left dense').classes(
-                        'w-full text-slate-600 font-normal text-sm pl-8 hover:text-teal-700').on_click(lambda t=topic: on_topic_click(t))
+                        'w-full text-teal-600 font-medium text-sm pl-8 hover:text-teal-800 transition-colors').on_click(lambda t=topic: on_topic_click(t))
 
 
 @ui.page('/')
 def dashboard():
-    # --- FIX: MOVED CSS INJECTION HERE ---
+    # --- CSS INJECTION ---
     ui.add_head_html('''
     <style>
         /* Force sidebar icons to be larger (40px) */
@@ -228,10 +249,8 @@ if __name__ in {"__main__", "__mp_main__"}:
     # Render provides the port in the 'PORT' environment variable
     port = int(os.environ.get("PORT", 8080))
 
-    # UPDATE THESE LINES:
     ui.run(
-        title='Skim',                  # 1. Changes the Tab Name
-        # 2. Changes the Tab Logo (ensure file exists)
+        title='Skim',
         favicon='assets/logo.png',
         port=port,
         host='0.0.0.0'
