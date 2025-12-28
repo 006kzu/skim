@@ -20,7 +20,7 @@ ICON_ALIASES = {
 
 def get_category_icon(category_name):
     """
-    Robustly finds the best matching icon.
+    Robustly finds the best matching icon and handles CACHE BUSTING.
     """
     if not category_name:
         return '/assets/logo.png'
@@ -28,24 +28,36 @@ def get_category_icon(category_name):
     clean_name = category_name.lower().strip()
     file_name = clean_name.replace(" ", "_")
 
+    # Helper to check existence and add timestamp for cache busting
+    def get_versioned_path(path):
+        if os.path.exists(path):
+            # We append the modification time (?v=12345) to force the browser
+            # to re-fetch the image if the file has changed.
+            mtime = os.path.getmtime(path)
+            return f"/{path}?v={mtime}"
+        return None
+
     # PATH 1: Check for specific file
     specific_path = f"assets/{file_name}.png"
-    if os.path.exists(specific_path):
-        return f"/{specific_path}"
+    found = get_versioned_path(specific_path)
+    if found:
+        return found
 
     # PATH 2: Check Aliases
     if clean_name in ICON_ALIASES:
-        alias_file = f"assets/{ICON_ALIASES[clean_name]}.png"
-        if os.path.exists(alias_file):
-            return f"/{alias_file}"
+        alias_path = f"assets/{ICON_ALIASES[clean_name]}.png"
+        found = get_versioned_path(alias_path)
+        if found:
+            return found
 
     # PATH 3: Fallback to Hub
     for hub, topic_list in topics.TOPIC_HUBS.items():
         if any(t.lower() == clean_name for t in topic_list):
             hub_file = hub.lower().replace(" ", "_")
             hub_path = f"assets/{hub_file}.png"
-            if os.path.exists(hub_path):
-                return f"/{hub_path}"
+            found = get_versioned_path(hub_path)
+            if found:
+                return found
 
     # PATH 4: Safety Net
     return '/assets/logo.png'
@@ -71,11 +83,11 @@ def display_arxiv_card(container, paper):
             ui.separator().classes('mt-4 mb-2')
             with ui.row().classes('w-full justify-between items-center'):
 
-                # FIXED: Simple lambda to open URL
+                # FIXED: Use 'href' prop instead of on_click to avoid popup blockers
                 url = paper.get('link')
                 if url:
-                    ui.button('PDF', icon='open_in_new', on_click=lambda: ui.open(
-                        url, new_tab=True)).props('flat dense color=grey')
+                    ui.button('PDF', icon='open_in_new') \
+                        .props(f'href="{url}" target="_blank" flat dense color=grey')
 
                 async def run_ai_skim():
                     skim_btn.props('loading')
@@ -90,7 +102,6 @@ def display_arxiv_card(container, paper):
 
 def display_curated_card(container, paper):
     with container:
-        # We start the card. We assign it to a variable 'card' so we can attach events to it.
         card = ui.card().classes(
             'w-full border-l-4 border-teal-500 shadow-sm transition-all duration-300')
 
@@ -114,8 +125,7 @@ def display_curated_card(container, paper):
             ui.label(paper['title']).classes(
                 'text-xs text-slate-400 mt-2 italic')
 
-            # --- HOVER SECTION (PYTHON POWERED) ---
-            # We create the container but hide it initially.
+            # --- HOVER SECTION ---
             details = ui.column().classes(
                 'hidden w-full mt-4 bg-teal-50/50 p-4 rounded border border-teal-100 transition-all')
 
@@ -148,22 +158,18 @@ def display_curated_card(container, paper):
                     ui.markdown(str(implications)).classes(
                         'text-sm text-slate-800 leading-relaxed')
 
-            # --- PYTHON EVENTS FOR HOVER ---
-            # When mouse enters card -> Remove 'hidden' class from details
+            # Events
             card.on('mouseenter', lambda: details.classes(remove='hidden'))
-            # When mouse leaves card -> Add 'hidden' class back
             card.on('mouseleave', lambda: details.classes(add='hidden'))
 
             # Footer
             url = paper.get('url') or paper.get('link')
 
-            # FIXED: Button Logic
+            # FIXED: Use 'href' prop for a real link (avoids popup blockers)
             if url:
                 with ui.row().classes('mt-4 w-full justify-end'):
-                    # We use a lambda taking 0 arguments to ensure 'url' is captured correctly
-                    # and the click event object is ignored.
-                    ui.button('Read Source', icon='link',
-                              on_click=lambda: ui.open(url, new_tab=True)).props('flat dense color=teal')
+                    ui.button('Read Source', icon='link') \
+                        .props(f'href="{url}" target="_blank" flat dense color=teal')
 
 
 def header():
@@ -190,7 +196,7 @@ def sidebar(on_topic_click):
 
         for hub_name, topic_list in topics.TOPIC_HUBS.items():
             icon_path = get_category_icon(hub_name)
-            # Using img: prefix here as it's often more reliable for sidebar expansion icons
+            # Use img: prefix which works well for expansion icons
             with ui.expansion(hub_name, icon=f'img:{icon_path}').classes('w-full text-slate-800 font-bold'):
                 for topic in topic_list:
                     ui.button(topic).props('flat align=left dense').classes(
