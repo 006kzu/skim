@@ -86,12 +86,10 @@ def display_arxiv_card(container, paper):
 
 def display_curated_card(container, paper, on_hover=None, on_leave=None):
     with container:
-        # We assign the card to a variable so we can bind events to it
         card = ui.card().classes(
             'w-full border-l-4 border-teal-500 shadow-sm hover:shadow-md transition-all duration-300 cursor-default')
 
         with card:
-            # Header
             with ui.row().classes('justify-between w-full items-start'):
                 category = paper.get('category', 'General')
                 icon_path = get_category_icon(category)
@@ -104,24 +102,19 @@ def display_curated_card(container, paper, on_hover=None, on_leave=None):
                 ui.badge(f"Score: {paper.get('score', '?')}/10",
                          color='teal').props('outline')
 
-            # Content
             ui.label(paper.get('summary', 'No summary')).classes(
                 'text-lg font-bold leading-tight mt-2 text-slate-900')
             ui.label(paper['title']).classes(
                 'text-xs text-slate-400 mt-2 italic')
 
-            # Footer
             url = paper.get('url') or paper.get('link')
             if url:
                 with ui.row().classes('mt-4 w-full justify-end'):
-                    # Using href prop for reliable opening
                     ui.button('Read Source', icon='link').props(
                         f'href="{url}" target="_blank" flat dense color=teal')
 
-        # --- EVENT BINDING ---
         if on_hover:
             card.on('mouseenter', lambda: on_hover(paper))
-
         if on_leave:
             card.on('mouseleave', on_leave)
 
@@ -131,8 +124,12 @@ def header():
         with ui.row().classes('items-center ml-4'):
             ui.image('/assets/logo.png').classes('w-20 h-20 mr-4')
             with ui.column().classes('gap-0'):
-                ui.label('Skim').classes(
-                    'text-2xl font-black tracking-tight text-slate-900')
+                with ui.row().classes('items-center gap-3'):
+                    ui.label('Skim').classes(
+                        'text-2xl font-black tracking-tight text-slate-900')
+                    # --- VERSION BADGE (Verify this is visible!) ---
+                    ui.label('v2.0').classes(
+                        'bg-teal-100 text-teal-800 text-xs px-2 py-1 rounded font-bold')
                 ui.label('Academic Resources (Only the Good Ones)').classes(
                     'text-xs font-bold text-teal-600 tracking-widest uppercase')
 
@@ -170,15 +167,14 @@ def dashboard():
     # --- THE INSPECTOR PANEL (Layout) ---
     with ui.row().classes('w-full max-w-7xl mx-auto p-6 gap-8 items-start relative'):
 
-        # 1. LEFT COLUMN: The Feed
+        # LEFT COLUMN
         left_col = ui.column().classes('flex-grow w-full md:w-2/3')
 
-        # 2. RIGHT COLUMN: The Sticky Inspector
+        # RIGHT COLUMN
         right_col = ui.card().classes(
             'hidden md:flex w-1/3 sticky top-28 h-auto min-h-[500px] border border-teal-100 bg-white shadow-lg p-0 overflow-hidden')
 
         with right_col:
-            # State A: Default (Logo)
             default_view = ui.column().classes(
                 'w-full h-96 items-center justify-center text-slate-300 transition-opacity duration-500')
             with default_view:
@@ -188,7 +184,6 @@ def dashboard():
                 ui.label('HOVER TO INSPECT').classes(
                     'text-xs font-bold tracking-[0.3em] mt-2 opacity-40')
 
-            # State B: Active (Paper Details)
             info_view = ui.column().classes('hidden w-full h-full p-6 bg-slate-50/50')
             with info_view:
                 with ui.row().classes('w-full justify-between items-start mb-4'):
@@ -208,7 +203,6 @@ def dashboard():
                 i_impact_container = ui.column().classes('w-full gap-2')
 
     # --- INTERACTION HANDLERS ---
-
     def update_inspector(paper):
         default_view.classes(add='hidden')
         info_view.classes(remove='hidden')
@@ -263,7 +257,6 @@ def dashboard():
         top_papers = database.get_top_rated_papers(limit=12)
         render_feed(top_papers, 'Global Top Hits (Recent)')
 
-    # --- ASSEMBLE ---
     with left_col:
         ui.label('Deep Search').classes(
             'text-2xl font-bold text-slate-800 mb-4')

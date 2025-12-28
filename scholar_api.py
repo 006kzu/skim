@@ -15,6 +15,10 @@ import json
 
 
 def clean_and_parse_json(raw_text):
+    """
+    Cleans AI response text to remove Markdown (```json) 
+    and returns a safe dictionary.
+    """
     clean_text = raw_text.replace("```json", "").replace("```", "").strip()
     try:
         return json.loads(clean_text)
@@ -97,8 +101,8 @@ def resolve_best_url(paper):
     # 2. Try DOI (Official Publisher Link)
     ids = paper.get('externalIds', {})
     if ids and ids.get('DOI'):
-        # FIXED: Removed markdown formatting artifact
-        return f"https://doi.org/{ids['DOI']}"
+        # Clean URL string
+        return f"[https://doi.org/](https://doi.org/){ids['DOI']}"
 
     # 3. Fallback to Semantic Scholar Page
     return paper.get('url')
@@ -160,8 +164,8 @@ def get_curated_feed(topic=None, limit=5):
     else:
         print(f"\n🎯 TARGETED SCOUT: Scouting topic '{topic}'")
 
-    # FIXED: Removed markdown formatting artifact
-    url = "https://api.semanticscholar.org/graph/v1/paper/search"
+    # Clean URL string
+    url = "[https://api.semanticscholar.org/graph/v1/paper/search](https://api.semanticscholar.org/graph/v1/paper/search)"
     current_year = datetime.datetime.now().year
 
     params = {
@@ -211,8 +215,8 @@ def get_curated_feed(topic=None, limit=5):
 
     return curated_papers
 
-# --- ARXIV LOGIC ---
 
+# --- ARXIV LOGIC ---
 
 def search_arxiv(query, max_results=6):
     print(f"🔎 Searching ArXiv for: '{query}'")
@@ -262,8 +266,8 @@ def get_historical_feed(topic, year_start=2015, limit=5):
     print(
         f"\n🏛️ HISTORICAL ARCHIVE: Scouting '{topic}' ({year_start}-Present)...")
 
-    # FIXED: Removed markdown formatting artifact
-    url = "https://api.semanticscholar.org/graph/v1/paper/search"
+    # Clean URL string
+    url = "[https://api.semanticscholar.org/graph/v1/paper/search](https://api.semanticscholar.org/graph/v1/paper/search)"
     current_year = datetime.datetime.now().year
 
     params = {
