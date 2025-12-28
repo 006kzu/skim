@@ -31,7 +31,7 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 google_api_key = os.getenv("GOOGLE_API_KEY")
-s2_api_key = os.getenv("S2_API_KEY")  # <--- NEW: Semantic Scholar Key
+s2_api_key = os.getenv("S2_API_KEY")
 
 if not google_api_key:
     print("❌ ERROR: GOOGLE_API_KEY not found in .env or environment variables!")
@@ -39,7 +39,6 @@ if not google_api_key:
 client = genai.Client(api_key=google_api_key)
 
 # --- DATA SCHEMA ---
-# Consolidated into ONE correct class matching your Database
 
 
 class QuickPaperReview(BaseModel):
@@ -61,7 +60,6 @@ def fetch_with_retry(url, params, retries=3, backoff_factor=2):
     print(
         f"📡 Connecting to Semantic Scholar... (Query: {params.get('query')})")
 
-    # Authenticate to avoid Rate Limiting
     headers = {}
     if s2_api_key:
         headers["x-api-key"] = s2_api_key
@@ -89,6 +87,25 @@ def fetch_with_retry(url, params, retries=3, backoff_factor=2):
             print(f"❌ Network Exception: {e}")
             return []
     return []
+
+
+def resolve_best_url(paper):
+    """
+    Finds the most direct link to the content.
+    Priority: Open Access PDF -> DOI (Official) -> Semantic Scholar Page
+    """
+    # 1. Try Open Access PDF (Best for reading)
+    pdf_data = paper.get('openAccessPdf')
+    if pdf_data and pdf_data.get('url'):
+        return pdf_data['url']
+
+    # 2. Try DOI (Official Publisher Link)
+    ids = paper.get('externalIds', {})
+    if ids.get('DOI'):
+        return f"[https://doi.org/](https://doi.org/){ids['DOI']}"
+
+    # 3. Fallback to Semantic Scholar Page
+    return paper.get('url')
 
 
 def evaluate_paper(paper):
@@ -142,7 +159,7 @@ def evaluate_paper(paper):
 
 def get_curated_feed(topic=None, limit=5):
     """
-    Fetches papers. If topic is None, it AUTO-SCOUTS a random topic from topics.py.
+    Fetches papers. If topic is None, it AUTO-SCOUTS a random topic.
     """
     if not topic:
         topic = random.choice(topics.ALL_TOPICS)
@@ -150,21 +167,17 @@ def get_curated_feed(topic=None, limit=5):
     else:
         print(f"\n🎯 TARGETED SCOUT: Scouting topic '{topic}'")
 
-    # --- FIX IS HERE: Ensure this is a simple string ---
-    url = "https://api.semanticscholar.org/graph/v1/paper/search"
-
+    url = "[https://api.semanticscholar.org/graph/v1/paper/search](https://api.semanticscholar.org/graph/v1/paper/search)"
     current_year = datetime.datetime.now().year
 
+    # UPDATED: Requesting 'openAccessPdf' and 'externalIds'
     params = {
         "query": topic,
         "year": f"{current_year-1}-{current_year}",
         "sort": "publicationDate:desc",
-        "fields": "title,abstract,url,publicationDate,venue,authors,paperId",
+        "fields": "title,abstract,url,publicationDate,venue,authors,paperId,openAccessPdf,externalIds",
         "limit": limit * 2
     }
-
-    # Debug print to ensure URL is clean before requesting
-    # print(f"DEBUG: Requesting URL: {url}")
 
     raw_papers = fetch_with_retry(url, params)
     curated_papers = []
@@ -182,12 +195,15 @@ def get_curated_feed(topic=None, limit=5):
             author_str = ", ".join(
                 [a['name'] for a in author_list[:2]]) if author_list else "Unknown"
 
+            # UPDATED: Use the resolver to get the best URL
+            direct_url = resolve_best_url(paper)
+
             curated_papers.append({
                 "title": paper['title'],
                 "date": paper.get('publicationDate', 'Recent'),
                 "authors": author_str,
                 "summary": review['layman_summary'],
-                "url": paper.get('url'),
+                "url": direct_url,  # <--- Now points to PDF/DOI if available
                 "journal": paper.get('venue') or "Journal",
                 "score": review['score'],
                 "category": review['category'],
@@ -255,25 +271,22 @@ def analyze_with_ai(paper_title, paper_abstract):
 def get_historical_feed(topic, year_start=2015, limit=5):
     """
     Fetches the most HIGHLY CITED papers for a topic within a year range.
-    Used for populating the database with historical hits.
     """
     print(
         f"\n🏛️ HISTORICAL ARCHIVE: Scouting '{topic}' ({year_start}-Present)...")
 
-    # Reuse the correct URL (ensure it's a clean string)
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
     current_year = datetime.datetime.now().year
 
+    # UPDATED: Requesting 'openAccessPdf' and 'externalIds'
     params = {
         "query": topic,
         "year": f"{year_start}-{current_year}",
-        # KEY CHANGE: Sort by CITATIONS to find "Influential" papers
         "sort": "citationCount:desc",
-        "fields": "title,abstract,url,publicationDate,venue,authors,paperId,citationCount",
+        "fields": "title,abstract,url,publicationDate,venue,authors,paperId,citationCount,openAccessPdf,externalIds",
         "limit": limit * 2
     }
 
-    # Reuse your existing robust fetch function
     raw_papers = fetch_with_retry(url, params)
     curated_papers = []
 
@@ -281,10 +294,8 @@ def get_historical_feed(topic, year_start=2015, limit=5):
         if not paper.get('abstract'):
             continue
 
-        # We run the same AI evaluation to get the summary/findings
         review = evaluate_paper(paper)
 
-        # We accept Score >= 6 for historical classics (sometimes older papers are drier but vital)
         if review and review['score'] >= 6:
             print(
                 f"   🏛️ KEEPING CLASSIC (Cited {paper.get('citationCount', '?')} times)")
@@ -293,12 +304,15 @@ def get_historical_feed(topic, year_start=2015, limit=5):
             author_str = ", ".join(
                 [a['name'] for a in author_list[:2]]) if author_list else "Unknown"
 
+            # UPDATED: Use the resolver here too
+            direct_url = resolve_best_url(paper)
+
             curated_papers.append({
                 "title": paper['title'],
                 "date": paper.get('publicationDate', 'Recent'),
                 "authors": author_str,
                 "summary": review['layman_summary'],
-                "url": paper.get('url'),
+                "url": direct_url,  # <--- Direct link
                 "journal": paper.get('venue') or "Journal",
                 "score": review['score'],
                 "category": review['category'],
