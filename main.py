@@ -127,8 +127,8 @@ def header():
                 with ui.row().classes('items-center gap-3'):
                     ui.label('Skim').classes(
                         'text-2xl font-black tracking-tight text-slate-900')
-                    # --- VERSION BADGE (Verify this is visible!) ---
-                    ui.label('v2.0').classes(
+                    # I added v2.1 so you know for sure this file took effect
+                    ui.label('v2.1').classes(
                         'bg-teal-100 text-teal-800 text-xs px-2 py-1 rounded font-bold')
                 ui.label('Academic Resources (Only the Good Ones)').classes(
                     'text-xs font-bold text-teal-600 tracking-widest uppercase')
@@ -164,15 +164,14 @@ def dashboard():
 
     header()
 
-    # --- THE INSPECTOR PANEL (Layout) ---
     with ui.row().classes('w-full max-w-7xl mx-auto p-6 gap-8 items-start relative'):
 
         # LEFT COLUMN
         left_col = ui.column().classes('flex-grow w-full md:w-2/3')
 
-        # RIGHT COLUMN
+        # RIGHT COLUMN - FIXED: Removed "hidden" so it's always visible
         right_col = ui.card().classes(
-            'hidden md:flex w-1/3 sticky top-28 h-auto min-h-[500px] border border-teal-100 bg-white shadow-lg p-0 overflow-hidden')
+            'flex w-1/3 sticky top-28 h-auto min-h-[500px] border border-teal-100 bg-white shadow-lg p-0 overflow-hidden')
 
         with right_col:
             default_view = ui.column().classes(
