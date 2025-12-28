@@ -11,25 +11,16 @@ database.init_db()
 app.add_static_files('/assets', 'assets')
 
 # --- ICON RESOLVER LOGIC ---
-
-# 1. Manual Overrides: Map specific API terms to your specific file names if they differ
-# (e.g. if API returns "Artificial Intelligence" but your file is "ai.png")
 ICON_ALIASES = {
     "artificial intelligence": "ai",
     "machine learning": "ai",
     "deep learning": "ai",
-    # Add more here if you find mismatches in the future
 }
 
 
 def get_category_icon(category_name):
     """
     Robustly finds the best matching icon.
-    Priority:
-    1. Exact Match (normalized): "Biomedical Engineering" -> 'assets/biomedical_engineering.png'
-    2. Alias Match: "Artificial Intelligence" -> 'assets/ai.png'
-    3. Hub Fallback: If "Bionics" icon is missing, use "Future Tech" icon.
-    4. Default: 'assets/logo.png'
     """
     if not category_name:
         return '/assets/logo.png'
@@ -37,8 +28,7 @@ def get_category_icon(category_name):
     clean_name = category_name.lower().strip()
     file_name = clean_name.replace(" ", "_")
 
-    # PATH 1: Check for specific file (e.g. "assets/robotics.png")
-    # We check relative to current working directory
+    # PATH 1: Check for specific file
     specific_path = f"assets/{file_name}.png"
     if os.path.exists(specific_path):
         return f"/{specific_path}"
@@ -49,10 +39,8 @@ def get_category_icon(category_name):
         if os.path.exists(alias_file):
             return f"/{alias_file}"
 
-    # PATH 3: Fallback to Hub (Parent Category)
-    # We search the TOPIC_HUBS in topics.py to see where this topic lives
+    # PATH 3: Fallback to Hub
     for hub, topic_list in topics.TOPIC_HUBS.items():
-        # Check if our category is in this hub's list (case insensitive)
         if any(t.lower() == clean_name for t in topic_list):
             hub_file = hub.lower().replace(" ", "_")
             hub_path = f"assets/{hub_file}.png"
@@ -83,9 +71,11 @@ def display_arxiv_card(container, paper):
             ui.separator().classes('mt-4 mb-2')
             with ui.row().classes('w-full justify-between items-center'):
 
+                # FIXED: Simple lambda to open URL
                 url = paper.get('link')
-                ui.button('PDF', icon='open_in_new', on_click=lambda url=url: ui.open(
-                    url, new_tab=True)).props('flat dense color=grey')
+                if url:
+                    ui.button('PDF', icon='open_in_new', on_click=lambda: ui.open(
+                        url, new_tab=True)).props('flat dense color=grey')
 
                 async def run_ai_skim():
                     skim_btn.props('loading')
@@ -100,12 +90,13 @@ def display_arxiv_card(container, paper):
 
 def display_curated_card(container, paper):
     with container:
-        # Hover effect: group class added
-        with ui.card().classes('w-full border-l-4 border-teal-500 shadow-sm group hover:shadow-md transition-all duration-300'):
+        # We start the card. We assign it to a variable 'card' so we can attach events to it.
+        card = ui.card().classes(
+            'w-full border-l-4 border-teal-500 shadow-sm transition-all duration-300')
+
+        with card:
             # Header
             with ui.row().classes('justify-between w-full items-start'):
-
-                # --- UPDATED ICON LOGIC ---
                 category = paper.get('category', 'General')
                 icon_path = get_category_icon(category)
 
@@ -123,9 +114,12 @@ def display_curated_card(container, paper):
             ui.label(paper['title']).classes(
                 'text-xs text-slate-400 mt-2 italic')
 
-            # --- HOVER SECTION ---
-            with ui.column().classes('hidden group-hover:block w-full mt-4 bg-teal-50/50 p-4 rounded border border-teal-100 transition-all'):
+            # --- HOVER SECTION (PYTHON POWERED) ---
+            # We create the container but hide it initially.
+            details = ui.column().classes(
+                'hidden w-full mt-4 bg-teal-50/50 p-4 rounded border border-teal-100 transition-all')
 
+            with details:
                 # 1. Findings
                 ui.label('Key Findings').classes(
                     'text-xs font-bold text-teal-700 uppercase mb-1')
@@ -154,13 +148,22 @@ def display_curated_card(container, paper):
                     ui.markdown(str(implications)).classes(
                         'text-sm text-slate-800 leading-relaxed')
 
+            # --- PYTHON EVENTS FOR HOVER ---
+            # When mouse enters card -> Remove 'hidden' class from details
+            card.on('mouseenter', lambda: details.classes(remove='hidden'))
+            # When mouse leaves card -> Add 'hidden' class back
+            card.on('mouseleave', lambda: details.classes(add='hidden'))
+
             # Footer
             url = paper.get('url') or paper.get('link')
 
+            # FIXED: Button Logic
             if url:
                 with ui.row().classes('mt-4 w-full justify-end'):
+                    # We use a lambda taking 0 arguments to ensure 'url' is captured correctly
+                    # and the click event object is ignored.
                     ui.button('Read Source', icon='link',
-                              on_click=lambda url=url: ui.open(url, new_tab=True)).props('flat dense color=teal')
+                              on_click=lambda: ui.open(url, new_tab=True)).props('flat dense color=teal')
 
 
 def header():
@@ -186,15 +189,8 @@ def sidebar(on_topic_click):
             'text-xs font-bold text-slate-400 uppercase mb-4 tracking-wider')
 
         for hub_name, topic_list in topics.TOPIC_HUBS.items():
-            # Use the new robust resolver here too for the sidebar Hub icons!
             icon_path = get_category_icon(hub_name)
-
-            # Note: ui.expansion doesn't support 'img:' prefix natively well in all versions,
-            # but usually accepts an icon name. Since we want custom images,
-            # we might just use a generic icon or try the image path if supported.
-            # For safety in this specific UI component, let's stick to a reliable mapping
-            # OR use the 'img:' prefix which NiceGUI supports for local files.
-
+            # Using img: prefix here as it's often more reliable for sidebar expansion icons
             with ui.expansion(hub_name, icon=f'img:{icon_path}').classes('w-full text-slate-800 font-bold'):
                 for topic in topic_list:
                     ui.button(topic).props('flat align=left dense').classes(
