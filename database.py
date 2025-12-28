@@ -78,7 +78,7 @@ def get_papers_by_topic(topic, limit=20):
         response = supabase.table("papers") \
             .select("*") \
             .eq("topic", topic) \
-            .order("created_at", desc=True) \
+            .order("date_added", desc=True) \
             .limit(limit) \
             .execute()
         return response.data
