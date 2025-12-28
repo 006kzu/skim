@@ -29,4 +29,5 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          S2_API_KEY: ${{ secrets.S2_API_KEY }}
         run: python nightly_scout.py

@@ -8,10 +8,10 @@ import os
 from google import genai
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-import topics  # <--- NEW IMPORT
+import topics
 import json
 
-# --- ADD THIS HELPER FUNCTION ---
+# --- HELPER: JSON CLEANER ---
 
 
 def clean_and_parse_json(raw_text):
@@ -19,10 +19,7 @@ def clean_and_parse_json(raw_text):
     Cleans AI response text to remove Markdown (```json) 
     and returns a safe dictionary.
     """
-    # 1. Remove markdown code blocks if present
     clean_text = raw_text.replace("```json", "").replace("```", "").strip()
-
-    # 2. Try to parse the cleaned text
     try:
         return json.loads(clean_text)
     except json.JSONDecodeError:
@@ -33,40 +30,29 @@ def clean_and_parse_json(raw_text):
 load_dotenv()
 
 # --- CONFIGURATION ---
-api_key = os.getenv("GOOGLE_API_KEY")
-if not api_key:
+google_api_key = os.getenv("GOOGLE_API_KEY")
+s2_api_key = os.getenv("S2_API_KEY")  # <--- NEW: Semantic Scholar Key
+
+if not google_api_key:
     print("❌ ERROR: GOOGLE_API_KEY not found in .env or environment variables!")
-else:
-    print(f"✅ Google API Key loaded (starts with {api_key[:5]}...)")
 
-client = genai.Client(api_key=api_key)
+client = genai.Client(api_key=google_api_key)
 
-# --- DATA STRUCTURES ---
+# --- DATA SCHEMA ---
+# Consolidated into ONE correct class matching your Database
 
 
 class QuickPaperReview(BaseModel):
     score: int = Field(
         description="Score 1-10 based on wider population impact.")
-    is_major: bool = Field(
-        description="True ONLY if the research fundamentally changes how we interact with the world.")
     layman_summary: str = Field(
         description="A catchy, 1-sentence news-style headline.")
-    category: str = Field(description="The specific sub-field.")
-    # --- NEW FIELDS ---
+    category: str = Field(
+        description="The specific sub-field (e.g. 'Robotics', 'Neuroscience').")
     key_findings: List[str] = Field(
-        description="3-5 bullet points of specific statistics, metrics, or core results (e.g. '95% accuracy', '2x faster').")
+        description="3-5 bullet points of specific statistics, metrics, or core results.")
     implications: List[str] = Field(
-        description="2-3 bullet points on the practical, real-world consequences of this finding.")
-
-
-class QuickPaperReview(BaseModel):
-    score: int = Field(
-        description="Score 1-10 based on wider population impact.")
-    is_major: bool = Field(
-        description="True ONLY if the research fundamentally changes how we interact with the world.")
-    layman_summary: str = Field(
-        description="A catchy, 1-sentence news-style headline focusing on the real-world benefit.")
-    category: str = Field(description="The specific sub-field.")
+        description="2-3 bullet points on the practical, real-world consequences.")
 
 # --- SEMANTIC SCHOLAR (FEED) LOGIC ---
 
@@ -74,9 +60,16 @@ class QuickPaperReview(BaseModel):
 def fetch_with_retry(url, params, retries=3, backoff_factor=2):
     print(
         f"📡 Connecting to Semantic Scholar... (Query: {params.get('query')})")
+
+    # Authenticate to avoid Rate Limiting
+    headers = {}
+    if s2_api_key:
+        headers["x-api-key"] = s2_api_key
+
     for attempt in range(retries):
         try:
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, headers=headers)
+
             if response.status_code == 200:
                 data = response.json().get('data', [])
                 print(
@@ -86,6 +79,9 @@ def fetch_with_retry(url, params, retries=3, backoff_factor=2):
                 wait_time = (backoff_factor ** attempt) + random.uniform(0, 1)
                 print(f"⚠️ Rate limited. Waiting {wait_time:.1f}s...")
                 time.sleep(wait_time)
+            elif response.status_code == 403:
+                print("❌ 403 Forbidden: Your S2_API_KEY might be invalid.")
+                return []
             else:
                 print(f"❌ Error: Status Code {response.status_code}")
                 return []
@@ -93,20 +89,6 @@ def fetch_with_retry(url, params, retries=3, backoff_factor=2):
             print(f"❌ Network Exception: {e}")
             return []
     return []
-
-
-class QuickPaperReview(BaseModel):
-    score: int = Field(
-        description="Relevance score from 1-10 based on the 'Filter' criteria")
-    layman_summary: str = Field(
-        description="A simplified summary of the paper")
-    key_findings: str = Field(
-        description="Specific numbers or results extracted from the abstract")
-    implications: str = Field(
-        description="Real-world applications enabled by this research")
-    # --- ADD THIS LINE ---
-    category: str = Field(
-        description="A single-word category for the paper (e.g. 'Robotics', 'Neuroscience', 'Materials')")
 
 
 def evaluate_paper(paper):
@@ -130,10 +112,10 @@ def evaluate_paper(paper):
 
     ### TASK 2: EXTRACTION
     Extract these details:
-    1. 'key_findings': Specific numbers or results.
-    2. 'implications': What does this enable?
+    1. 'key_findings': A LIST of specific numbers or results.
+    2. 'implications': A LIST of what this enables.
     3. 'layman_summary': A simple summary.
-    4. 'category': Classify into one domain (e.g. Bionics, AI, Materials). <--- ADD THIS
+    4. 'category': Classify into one domain (e.g. Bionics, AI, Materials).
     """
 
     try:
@@ -142,17 +124,14 @@ def evaluate_paper(paper):
             contents=prompt,
             config={
                 'response_mime_type': 'application/json',
-                'response_schema': QuickPaperReview,  # <--- Uses the class defined above
+                'response_schema': QuickPaperReview,
             }
         )
-        # The SDK automatically parses the JSON into your Pydantic model
         result = response.parsed.model_dump()
 
-        # Now these keys are guaranteed to exist
         if result['score'] >= 7:
             print(
                 f"   🔥 HIGH IMPACT (Score {result['score']}): {result['layman_summary']}")
-            print(f"      Findings: {result['key_findings']}")
 
         return result
 
@@ -165,21 +144,21 @@ def get_curated_feed(topic=None, limit=5):
     """
     Fetches papers. If topic is None, it AUTO-SCOUTS a random topic from topics.py.
     """
-    # --- AUTO-SCOUT LOGIC ---
     if not topic:
         topic = random.choice(topics.ALL_TOPICS)
         print(f"\n🎲 AUTO-SCOUT ACTIVATED: Scouting topic '{topic}'")
     else:
         print(f"\n🎯 TARGETED SCOUT: Scouting topic '{topic}'")
 
-    url = "https://api.semanticscholar.org/graph/v1/paper/search"
+    url = "[https://api.semanticscholar.org/graph/v1/paper/search](https://api.semanticscholar.org/graph/v1/paper/search)"
     current_year = datetime.datetime.now().year
 
     params = {
         "query": topic,
         "year": f"{current_year-1}-{current_year}",
         "sort": "publicationDate:desc",
-        "fields": "title,abstract,url,publicationDate,venue,authors",
+        # Added paperId explicitly
+        "fields": "title,abstract,url,publicationDate,venue,authors,paperId",
         "limit": limit * 2
     }
 
@@ -194,19 +173,25 @@ def get_curated_feed(topic=None, limit=5):
 
         if review and review['score'] >= 7:
             print("   🔥 KEEPING PAPER (High Impact)")
+
+            # Format authors safely
+            author_list = paper.get('authors', [])
+            author_str = ", ".join(
+                [a['name'] for a in author_list[:2]]) if author_list else "Unknown"
+
             curated_papers.append({
                 "title": paper['title'],
                 "date": paper.get('publicationDate', 'Recent'),
-                "authors": ", ".join([a['name'] for a in paper.get('authors', [])[:2]]),
+                "authors": author_str,
                 "summary": review['layman_summary'],
                 "url": paper.get('url'),
                 "journal": paper.get('venue') or "Journal",
                 "score": review['score'],
                 "category": review['category'],
                 "paperId": paper.get('paperId'),
-                # --- SAVE NEW DATA ---
-                "key_findings": review.get('key_findings', "No key findings available"),
-                "implications": review.get('implications', "No implications available")
+                # Use empty lists [] as default for JSONB compatibility
+                "key_findings": review.get('key_findings', []),
+                "implications": review.get('implications', [])
             })
         else:
             print("   🗑️ Discarding (Low Impact)")
