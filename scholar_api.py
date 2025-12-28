@@ -150,17 +150,21 @@ def get_curated_feed(topic=None, limit=5):
     else:
         print(f"\n🎯 TARGETED SCOUT: Scouting topic '{topic}'")
 
-    url = "[https://api.semanticscholar.org/graph/v1/paper/search](https://api.semanticscholar.org/graph/v1/paper/search)"
+    # --- FIX IS HERE: Ensure this is a simple string ---
+    url = "https://api.semanticscholar.org/graph/v1/paper/search"
+
     current_year = datetime.datetime.now().year
 
     params = {
         "query": topic,
         "year": f"{current_year-1}-{current_year}",
         "sort": "publicationDate:desc",
-        # Added paperId explicitly
         "fields": "title,abstract,url,publicationDate,venue,authors,paperId",
         "limit": limit * 2
     }
+
+    # Debug print to ensure URL is clean before requesting
+    # print(f"DEBUG: Requesting URL: {url}")
 
     raw_papers = fetch_with_retry(url, params)
     curated_papers = []
@@ -174,7 +178,6 @@ def get_curated_feed(topic=None, limit=5):
         if review and review['score'] >= 7:
             print("   🔥 KEEPING PAPER (High Impact)")
 
-            # Format authors safely
             author_list = paper.get('authors', [])
             author_str = ", ".join(
                 [a['name'] for a in author_list[:2]]) if author_list else "Unknown"
@@ -189,7 +192,6 @@ def get_curated_feed(topic=None, limit=5):
                 "score": review['score'],
                 "category": review['category'],
                 "paperId": paper.get('paperId'),
-                # Use empty lists [] as default for JSONB compatibility
                 "key_findings": review.get('key_findings', []),
                 "implications": review.get('implications', [])
             })
