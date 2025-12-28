@@ -15,6 +15,10 @@ import json
 
 
 def clean_and_parse_json(raw_text):
+    """
+    Cleans AI response text to remove Markdown (```json) 
+    and returns a safe dictionary.
+    """
     clean_text = raw_text.replace("```json", "").replace("```", "").strip()
     try:
         return json.loads(clean_text)
@@ -49,12 +53,13 @@ class QuickPaperReview(BaseModel):
     implications: List[str] = Field(
         description="2-3 bullet points on the practical, real-world consequences.")
 
-# --- SEMANTIC SCHOLAR LOGIC ---
+# --- SEMANTIC SCHOLAR (FEED) LOGIC ---
 
 
 def fetch_with_retry(url, params, retries=3, backoff_factor=2):
     print(
         f"📡 Connecting to Semantic Scholar... (Query: {params.get('query')})")
+
     headers = {}
     if s2_api_key:
         headers["x-api-key"] = s2_api_key
@@ -62,6 +67,7 @@ def fetch_with_retry(url, params, retries=3, backoff_factor=2):
     for attempt in range(retries):
         try:
             response = requests.get(url, params=params, headers=headers)
+
             if response.status_code == 200:
                 data = response.json().get('data', [])
                 print(
@@ -96,7 +102,7 @@ def resolve_best_url(paper):
     # 2. Try DOI (Official Publisher Link)
     ids = paper.get('externalIds', {})
     if ids and ids.get('DOI'):
-        return f"https://doi.org/{ids['DOI']}"
+        return f"[https://doi.org/](https://doi.org/){ids['DOI']}"
 
     # 3. Fallback to Semantic Scholar Page
     return paper.get('url')
@@ -152,16 +158,19 @@ def evaluate_paper(paper):
 
 
 def get_curated_feed(topic=None, limit=5):
+    """
+    Fetches papers. If topic is None, it AUTO-SCOUTS a random topic.
+    """
     if not topic:
         topic = random.choice(topics.ALL_TOPICS)
         print(f"\n🎲 AUTO-SCOUT ACTIVATED: Scouting topic '{topic}'")
     else:
         print(f"\n🎯 TARGETED SCOUT: Scouting topic '{topic}'")
 
-    url = "https://api.semanticscholar.org/graph/v1/paper/search"
+    url = "[https://api.semanticscholar.org/graph/v1/paper/search](https://api.semanticscholar.org/graph/v1/paper/search)"
     current_year = datetime.datetime.now().year
 
-    # UPDATED: Requesting 'openAccessPdf' and 'externalIds' to fix links
+    # UPDATED: Requesting 'openAccessPdf' and 'externalIds'
     params = {
         "query": topic,
         "year": f"{current_year-1}-{current_year}",
@@ -186,7 +195,7 @@ def get_curated_feed(topic=None, limit=5):
             author_str = ", ".join(
                 [a['name'] for a in author_list[:2]]) if author_list else "Unknown"
 
-            # Use the new resolver
+            # UPDATED: Resolves PDF link
             direct_url = resolve_best_url(paper)
 
             curated_papers.append({
@@ -206,12 +215,13 @@ def get_curated_feed(topic=None, limit=5):
             print("   🗑️ Discarding (Low Impact)")
 
         if len(curated_papers) >= limit:
+            print(f"✅ Limit reached ({limit} papers). Stopping.")
             break
 
     return curated_papers
 
+# --- ARXIV (SEARCH) LOGIC ---
 
-# --- ARXIV LOGIC ---
 
 def search_arxiv(query, max_results=6):
     print(f"🔎 Searching ArXiv for: '{query}'")
@@ -236,6 +246,7 @@ def search_arxiv(query, max_results=6):
 
 
 def analyze_with_ai(paper_title, paper_abstract):
+    """Deep dive skim for a specific paper."""
     print(f"⚡ Skimming specific paper: {paper_title[:30]}...")
     prompt = f"""
     Provide a "Skim" summary for:
@@ -258,11 +269,16 @@ def analyze_with_ai(paper_title, paper_abstract):
 
 
 def get_historical_feed(topic, year_start=2015, limit=5):
+    """
+    Fetches the most HIGHLY CITED papers for a topic.
+    """
     print(
         f"\n🏛️ HISTORICAL ARCHIVE: Scouting '{topic}' ({year_start}-Present)...")
-    url = "https://api.semanticscholar.org/graph/v1/paper/search"
+
+    url = "[https://api.semanticscholar.org/graph/v1/paper/search](https://api.semanticscholar.org/graph/v1/paper/search)"
     current_year = datetime.datetime.now().year
 
+    # UPDATED: Requesting 'openAccessPdf' and 'externalIds'
     params = {
         "query": topic,
         "year": f"{year_start}-{current_year}",
@@ -283,10 +299,12 @@ def get_historical_feed(topic, year_start=2015, limit=5):
         if review and review['score'] >= 6:
             print(
                 f"   🏛️ KEEPING CLASSIC (Cited {paper.get('citationCount', '?')} times)")
+
             author_list = paper.get('authors', [])
             author_str = ", ".join(
                 [a['name'] for a in author_list[:2]]) if author_list else "Unknown"
 
+            # UPDATED: Resolves PDF link
             direct_url = resolve_best_url(paper)
 
             curated_papers.append({

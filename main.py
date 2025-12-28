@@ -86,7 +86,7 @@ def display_arxiv_card(container, paper):
 
 def display_curated_card(container, paper, on_hover=None, on_leave=None):
     with container:
-        # Card definition with hover events
+        # We assign the card to a variable so we can bind events to it
         card = ui.card().classes(
             'w-full border-l-4 border-teal-500 shadow-sm hover:shadow-md transition-all duration-300 cursor-default')
 
@@ -118,9 +118,10 @@ def display_curated_card(container, paper, on_hover=None, on_leave=None):
                     ui.button('Read Source', icon='link').props(
                         f'href="{url}" target="_blank" flat dense color=teal')
 
-        # Bind events
+        # --- EVENT BINDING ---
         if on_hover:
             card.on('mouseenter', lambda: on_hover(paper))
+
         if on_leave:
             card.on('mouseleave', on_leave)
 
@@ -207,6 +208,7 @@ def dashboard():
                 i_impact_container = ui.column().classes('w-full gap-2')
 
     # --- INTERACTION HANDLERS ---
+
     def update_inspector(paper):
         default_view.classes(add='hidden')
         info_view.classes(remove='hidden')
