@@ -1,37 +1,50 @@
 # topics.py
 
 TOPIC_HUBS = {
-    "Engineering": [
+    "Engineering & Systems": [
         "Biomedical Engineering",
         "Electrical Engineering",
         "Mechanical Engineering",
         "Automotive Engineering",
         "Software Engineering",
-    ],
-    "Future Tech": [
-        "Artificial Intelligence",
-        "Bionics",
-        "Brain Computer Interface",
-        "Nuclear Fusion",
         "Robotics",
-        "Nuclear Fission",
+        "Power Electronics",
+        "Civil Engineering",
+    ],
+    "Computing & Software": [
+        "Artificial Intelligence",
+        "Data Science",
         "Cybersecurity",
         "Quantum Computing",
+        "Brain Computer Interface",
+        "Bioinformatics",
     ],
     "Life Sciences": [
         "Biology",
-        "Molecular Biology",
         "Neuroscience",
-        "Biochemistry",
         "Biotechnology",
+        "Biochemistry",
+        "Molecular Biology",
+        "Bionics",
+        "Medicine",
+        "Cardiovascular Medicine",
+        "Oncology",
+        "Nanomedicine",
     ],
-    "Hard Sciences": [
+    "Physical Sciences": [
         "Physics",
         "Chemistry",
-        "Data Science",
         "Material Science",
+        "Nuclear Fusion",
+        "Nuclear Fission",
+        "Nuclear Physics",
+        "Astronomy",
+        "Environmental Science",
+        "Climatology",
+        "Energy",
     ]
 }
 
 # Flattened list for the "Scout" script to iterate through
-ALL_TOPICS = [topic for group in TOPIC_HUBS.values() for topic in group]
+ALL_TOPICS = list(
+    set([topic for group in TOPIC_HUBS.values() for topic in group]))
