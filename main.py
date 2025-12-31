@@ -666,14 +666,14 @@ def topic_pages(topic_name: str):
         with ui.column().classes('w-full flex-grow relative transition-all overflow-hidden'):
             with ui.column().classes('w-full h-full items-center justify-center text-center') as default_view:
                 ui.image(
-                    '/assets/logo.png').classes('w-32 h-32 opacity-20 mb-4 grayscale opacity-30')
+                    '/assets/logo2.png').classes('w-32 h-32 mb-4')
                 ui.label('Cards you lock will appear here').classes(
                     'text-lg font-bold text-slate-400')
 
             with ui.column().classes('hidden w-full flex-grow bg-white rounded-xl border border-slate-200 shadow-md animate-fade overflow-hidden') as info_view:
                 with ui.row().classes('w-full justify-between items-center p-6 border-b border-slate-100 bg-slate-50'):
                     with ui.row().classes('items-center gap-3'):
-                        i_icon = ui.image().classes('w-8 h-8 opacity-80')
+                        i_icon = ui.image().classes('w-16 h-16')
                         i_category = ui.label('Category').classes(
                             'text-xs font-bold text-teal-600 uppercase tracking-wide')
                     with ui.row().classes('items-center gap-2'):
