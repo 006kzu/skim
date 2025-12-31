@@ -56,11 +56,9 @@ def render_smart_icon(category, classes, theme_opacity='opacity-100'):
         ui.image(icon_path).classes(
             f"{classes} object-contain drop-shadow-sm transition-transform duration-500 group-hover:scale-105 {theme_opacity}")
     else:
-        # Chrome Coin Fallback
-        letter = category[0].upper() if category else "?"
-        with ui.element('div').classes(f"{classes} rounded-full bg-gradient-to-br from-slate-100 via-slate-200 to-slate-400 border border-slate-300 shadow-inner flex items-center justify-center group-hover:scale-105 transition-transform duration-500"):
-            ui.label(letter).classes(
-                'text-slate-600 font-black text-2xl drop-shadow-sm')
+        # Fallback to logo2.png (Monotone Logo)
+        ui.image('assets/logo2.png').classes(
+            f"{classes} object-contain drop-shadow-sm transition-transform duration-500 group-hover:scale-105 {theme_opacity}")
 
 # --- HELPER: IMPACT THEME ---
 
@@ -585,7 +583,7 @@ def topic_pages(topic_name: str):
             if ico:
                 i_icon.set_source(ico)
             else:
-                i_icon.set_source('/assets/logo.png')
+                i_icon.set_source('/assets/logo2.png')
 
         score = paper.get('score', '?')
         if i_score:

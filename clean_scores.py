@@ -5,8 +5,8 @@ import os
 
 def clean_images():
     # Folder where your 1.png, 2.png... are located
-    input_dir = 'assets/scores'
-    output_dir = 'assets/scores/clean'
+    input_dir = 'assets'
+    output_dir = 'assets/clean'
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
