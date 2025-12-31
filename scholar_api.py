@@ -57,6 +57,10 @@ class QuickPaperReview(BaseModel):
         description="3-5 bullet points. Prioritize specific numbers/metrics if available, otherwise list core arguments or conclusions.")
     implications: List[str] = Field(
         description="2-3 bullet points on the practical, real-world consequences.")
+    # NEW FIELD: Title Highlights
+    title_highlights: List[str] = Field(
+        description="Extract 2-4 important technical terms or phrases that appear VERBATIM in the TITLE. Do not alter spelling."
+    )
 
 # --- SHARED LOGIC (SEMANTIC SCHOLAR & ARXIV) ---
 
@@ -91,6 +95,7 @@ def evaluate_paper(paper):
     2. 'implications': A LIST of what this enables or why it matters.
     3. 'layman_summary': A simple summary.
     4. 'category': Classify into one domain (e.g. Bionics, AI, Materials).
+    5. 'title_highlights': Identify the most important technical keywords/entities found strictly within the TITLE.
     """
 
     try:
@@ -216,7 +221,8 @@ def get_curated_feed(topic=None, limit=5):
                 "category": review['category'],
                 "paperId": paper.get('paperId'),
                 "key_findings": review.get('key_findings', []),
-                "implications": review.get('implications', [])
+                "implications": review.get('implications', []),
+                "title_highlights": review.get('title_highlights', [])  # ADDED
             })
         else:
             print("   🗑️ Discarding (Low Impact)")
@@ -271,7 +277,8 @@ def get_historical_feed(topic, year_start=2015, limit=5):
                 "category": review['category'],
                 "paperId": paper.get('paperId'),
                 "key_findings": review.get('key_findings', []),
-                "implications": review.get('implications', [])
+                "implications": review.get('implications', []),
+                "title_highlights": review.get('title_highlights', [])  # ADDED
             })
 
         if len(curated_papers) >= limit:
@@ -317,7 +324,9 @@ def search_arxiv(query, max_results=6):
                     "category": review['category'],
                     # 🚀 FIX: These are now populated by the AI
                     "key_findings": review.get('key_findings', []),
-                    "implications": review.get('implications', [])
+                    "implications": review.get('implications', []),
+                    # ADDED
+                    "title_highlights": review.get('title_highlights', [])
                 })
         print(f"✅ Found and Analyzed {len(results)} results on ArXiv.")
 

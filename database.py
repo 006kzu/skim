@@ -36,18 +36,21 @@ def save_paper(paper, search_topic):
     # 2. ADD TOPIC
     data['topic'] = search_topic
 
-    # 3. SAFETY CHECKS (Fixing the keys)
+    # 3. SAFETY CHECKS
     # The API returns 'url', but sometimes your code might look for 'link'
     if 'link' in data and 'url' not in data:
         data['url'] = data.pop('link')  # Rename link -> url
 
-    # Ensure 'url' isn't None (DB requires text usually)
+    # Ensure 'url' isn't None
     if not data.get('url'):
-        # Fallback if paperId exists
         if data.get('paperId'):
             data['url'] = f"https://www.semanticscholar.org/paper/{data['paperId']}"
         else:
             data['url'] = ""
+
+    # Ensure 'title_highlights' exists (defaults to empty list)
+    if 'title_highlights' not in data:
+        data['title_highlights'] = []
 
     # 4. REMOVE ID (Critical Fix)
     # We MUST delete the 'id' field so Supabase generates a new UUID.
