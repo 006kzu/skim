@@ -4,10 +4,18 @@ import database
 import topics
 import os
 import re
+import auth
+import base64
+import io
+from PIL import Image
 
 # --- INITIALIZATION ---
 database.init_db()
 app.add_static_files('/assets', 'assets')
+
+# --- CROPPING DEPENDENCIES ---
+ui.add_head_html('<link href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" rel="stylesheet">', shared=True)
+ui.add_head_html('<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>', shared=True)
 
 # --- ICON LOGIC (SMART CACHE) ---
 AVAILABLE_ICONS = set()
@@ -33,19 +41,19 @@ def get_category_icon(category_name):
 
     # 1. Exact Match
     if file_friendly in AVAILABLE_ICONS:
-        return f"assets/{file_friendly}.png"
+        return f"/assets/{file_friendly}.png"
 
     # 2. Alias Match
     if clean in ICON_ALIASES:
         alias = ICON_ALIASES[clean]
         if alias in AVAILABLE_ICONS:
-            return f"assets/{alias}.png"
+            return f"/assets/{alias}.png"
 
     # 3. Smart Fuzzy Match
     words = clean.split(' ')
     for word in words:
         if word in AVAILABLE_ICONS:
-            return f"assets/{word}.png"
+            return f"/assets/{word}.png"
 
     return None
 
@@ -129,11 +137,59 @@ def display_arxiv_card(container, paper):
 
     with container:
         with ui.card().classes(f"w-full hover:shadow-lg transition-all border {theme['card_bg']}"):
-            with ui.row().classes('justify-between w-full'):
-                ui.label('ArXiv Search').classes(
-                    f"text-xs font-bold uppercase {theme['accent_color']}")
-                ui.label(paper.get('date', '')).classes(
-                    f"text-xs {theme['text_meta']}")
+            with ui.row().classes('justify-between w-full items-center'):
+                with ui.row().classes('gap-2 items-center'):
+                    ui.label('ArXiv Search').classes(
+                        f"text-xs font-bold uppercase {theme['accent_color']}")
+                
+                with ui.row().classes('gap-2 items-center'):
+                    ui.label(paper.get('date', '')).classes(
+                        f"text-xs {theme['text_meta']}")
+                    
+                    # Favorite Button
+                    is_p_fav = False
+                    user = auth.get_current_user()
+                    fav_icon = 'favorite_border'
+                    fav_color = 'grey'
+                    
+                    # Check if already favored (requires checking DB which is expensive for search results, 
+                    # so maybe we default to unchecked unless we want to do a batch check)
+                    # For search results, we'll assume unchecked for now or checking requires querying 
+                    # favorites for all results. Let's keep it simple: unchecked default.
+                    
+                    fav_btn = ui.button(icon=fav_icon).props(f'flat round dense color={fav_color} size=sm')
+
+                    def on_fav_click_arxiv(e, p=paper, b=fav_btn):
+                        u = auth.get_current_user()
+                        if not u:
+                            ui.notify('Please login to save papers.', type='warning')
+                            return
+                        
+                        # 1. Ensure Paper is in DB
+                        pid = p.get('id')
+                        if not pid:
+                            # Save it first
+                            pid = database.save_paper(p, 'user_search')
+                            p['id'] = pid
+                        
+                        if not pid:
+                             ui.notify('Could not save paper details.', type='negative')
+                             return
+
+                        # 2. Toggle Favorite
+                        # We need to check state. We can store it on the button object?
+                        # Or check DB.
+                        is_saved = database.is_favorite(u['id'], pid)
+                        if is_saved:
+                            database.remove_favorite(u['id'], pid)
+                            b.props('icon=favorite_border color=grey')
+                            ui.notify('Removed from library.')
+                        else:
+                            database.save_favorite(u['id'], pid)
+                            b.props('icon=favorite color=red')
+                            ui.notify('Saved to library!')
+                    
+                    fav_btn.on('click', on_fav_click_arxiv)
 
             ui.label(paper['title']).classes(
                 f"text-lg font-bold leading-tight mt-2 {theme['text_title']}")
@@ -164,7 +220,7 @@ def display_arxiv_card(container, paper):
             ai_result_area.move(container)
 
 
-def display_curated_card(container, paper, on_hover=None, on_leave=None, on_click=None):
+def display_curated_card(container, paper, on_hover=None, on_leave=None, on_click=None, on_unfavorite=None):
     theme = get_impact_theme(paper)
 
     with container:
@@ -215,6 +271,47 @@ def display_curated_card(container, paper, on_hover=None, on_leave=None, on_clic
                     ui.label(final_text).classes(
                         f"text-6xl font-black {theme['score_color']}")
 
+            # --- FAVORITE BUTTON (Absolute Top Right) ---
+            user = auth.get_current_user()
+            fav_icon = 'favorite_border'
+            fav_color = 'slate-400'
+            
+            # Check if this paper is in favorites? 
+            # We can check cheaply if the paper object has a flag (passed from library view)
+            if paper.get('_is_saved'):
+                fav_icon = 'favorite'
+                fav_color = 'red-500'
+
+            fav_btn = ui.button(icon=fav_icon).props(f'flat round dense color=None').classes(f'absolute top-2 right-2 z-50 text-{fav_color}')
+            
+            def on_fav_click_curated(e):
+                u = auth.get_current_user()
+                if not u:
+                    ui.notify('Please login to save papers.', type='warning')
+                    return
+                
+                pid = paper.get('id')
+                if not pid:
+                     # Should exist for curated, but safe check
+                    pid = database.save_paper(paper, 'curated')
+                    paper['id'] = pid
+                
+                is_saved = database.is_favorite(u['id'], pid)
+                if is_saved:
+                    database.remove_favorite(u['id'], pid)
+                    fav_btn.props('icon=favorite_border')
+                    fav_btn.classes(remove='text-red-500', add='text-slate-400')
+                    ui.notify('Removed from library.')
+                    if on_unfavorite:
+                        on_unfavorite(paper)
+                else:
+                    database.save_favorite(u['id'], pid)
+                    fav_btn.props('icon=favorite')
+                    fav_btn.classes(remove='text-slate-400', add='text-red-500')
+                    ui.notify('Saved to library!')
+
+            fav_btn.on('click.stop', on_fav_click_curated)
+
             with ui.column().classes('w-full gap-3'):
                 title_text = paper.get('title', 'Untitled Paper')
                 highlights = paper.get('title_highlights') or []
@@ -252,7 +349,7 @@ def header(on_topic_click=None, on_home_click=None, on_search=None):
                             'text-xl font-black tracking-tight text-slate-900')
                         ui.label('v3.4').classes(
                             'bg-slate-200 text-slate-700 text-[10px] px-1.5 py-0.5 rounded font-bold')
-                    ui.label('Academic Resources').classes(
+                    ui.label('Academic Discussion').classes(
                         'text-[9px] font-bold text-slate-400 tracking-widest uppercase')
 
             with ui.row().classes('flex-grow justify-center max-w-2xl'):
@@ -285,34 +382,34 @@ def header(on_topic_click=None, on_home_click=None, on_search=None):
                     hub_timer = ui.timer(
                         0.2, lambda: mega_menu.close(), once=True)
 
-                with ui.menu().classes('bg-white border border-slate-200 shadow-2xl rounded-xl p-8 w-[1000px] max-w-[95vw]') as mega_menu:
+                with ui.menu().classes('bg-slate-900 border border-slate-700 shadow-2xl rounded-xl p-8 w-[1000px] max-w-[95vw]') as mega_menu:
                     mega_menu.props('no-parent-event')
                     with ui.row().classes('w-full justify-between items-start no-wrap gap-6'):
                         for hub_name, topic_list in topics.TOPIC_HUBS.items():
                             hub_icon = get_category_icon(hub_name)
                             with ui.column().classes('flex-1 gap-4'):
-                                with ui.row().classes('items-center gap-2 mb-1 border-b border-slate-100 pb-2 w-full'):
+                                with ui.row().classes('items-center gap-2 mb-1 border-b border-slate-700 pb-2 w-full'):
                                     if hub_icon:
                                         ui.image(hub_icon).classes(
-                                            'w-6 h-6 opacity-60 grayscale')
+                                            'w-6 h-6')
                                     else:
                                         ui.icon('category').classes(
-                                            'text-slate-300 text-lg')
+                                            'text-slate-500 text-lg')
                                     ui.label(hub_name).classes(
-                                        'text-xs font-black text-slate-400 uppercase tracking-wider')
+                                        'text-xs font-black text-slate-500 uppercase tracking-wider')
                                 with ui.column().classes('gap-1 w-full'):
                                     for topic in topic_list:
                                         topic_icon = get_category_icon(topic)
-                                        with ui.menu_item(on_click=lambda t=topic: on_topic_click(t)).classes('w-full rounded-md hover:bg-slate-50 transition-all duration-200 p-1 hover:scale-105 origin-left'):
+                                        with ui.menu_item(on_click=lambda t=topic: on_topic_click(t)).classes('w-full rounded-md hover:bg-slate-800 transition-all duration-200 p-1 hover:scale-105 origin-left'):
                                             with ui.row().classes('items-center gap-3 no-wrap'):
                                                 if topic_icon:
                                                     ui.image(topic_icon).classes(
-                                                        'w-5 h-5 opacity-70 grayscale')
+                                                        'w-5 h-5')
                                                 else:
                                                     ui.icon('circle').classes(
-                                                        'text-slate-300 text-xs')
+                                                        'text-slate-600 text-xs')
                                                 ui.label(topic).classes(
-                                                    'text-xs font-bold text-slate-700 leading-tight')
+                                                    'text-xs font-bold text-slate-300 leading-tight')
 
                 hub_btn.on('mouseenter', lambda: [
                            cancel_hub_timer(), mega_menu.open()])
@@ -321,13 +418,121 @@ def header(on_topic_click=None, on_home_click=None, on_search=None):
                 mega_menu.on('mouseleave', start_hub_timer)
 
                 ui.separator().props('vertical').classes('h-6 mx-2 opacity-30')
-                ui.link('Library', '/saved').classes(
-                    'text-slate-500 font-bold text-xs hover:text-slate-800 transition-colors uppercase tracking-wide')
+                ui.separator().props('vertical').classes('h-6 mx-2 opacity-30')
+                # --- AUTH / PROFILE SECTION ---
+                user = auth.get_current_user()
+                if user:
+                    # but DB is most accurate. Let's rely on DB for now since we have it.
+                    profile = database.get_profile(user['id']) or {}
+                    username_text = profile.get('username')
+                    
+                    # Force Username Creation if logged in but no username (e.g. fresh Google Auth)
+                    if not username_text:
+                        with ui.dialog().props('persistent') as username_dialog, ui.card().classes('w-[400px] p-8 items-center text-center'):
+                            ui.label('Create a Username').classes('text-2xl font-black mb-2')
+                            ui.label('Please choose a username to continue to Skim.').classes('text-slate-500 mb-6')
+                            
+                            u_input = ui.input('Username').classes('w-full mb-6')
+                            
+                            async def save_initial_username():
+                                if not u_input.value or len(u_input.value) < 3:
+                                    ui.notify('Username must be at least 3 characters.', type='negative')
+                                    return
+                                
+                                # Check uniqueness handled by DB constraint usually, but we catch error
+                                database.update_profile(user['id'], {'username': u_input.value})
+                                # We check if it stuck
+                                p_check = database.get_profile(user['id'])
+                                if p_check and p_check.get('username') == u_input.value:
+                                     ui.notify(f'Welcome, {u_input.value}!', type='positive')
+                                     username_dialog.close()
+                                     ui.navigate.to(app.storage.user.get('referrer_path', '/'), new_tab=False)
+                                else:
+                                     ui.notify('Error: Username taken or invalid.', type='negative')
+
+                            ui.button('Continue', on_click=save_initial_username).classes('w-full bg-slate-900 text-white')
+                        username_dialog.open()
+
+                    # Check for display text again
+                    display_name = username_text or user.get('email', '').split('@')[0]
+                    
+                    with ui.row().classes('items-center gap-3'):
+                        ui.label(display_name).classes('text-sm font-bold text-slate-700 hidden sm:block')
+                        
+                        # Avatar or Icon
+                        avatar = user.get('avatar_url') or user.get('metadata', {}).get('avatar_url')
+                        
+                        with ui.button().props('flat round p-0').classes('overflow-hidden w-9 h-9 border border-slate-200'):
+                             if avatar:
+                                 ui.image(avatar).classes('w-full h-full object-cover')
+                             else:
+                                 ui.icon('account_circle', size='md').classes('text-slate-600')
+                             
+                             with ui.menu():
+                                 ui.menu_item('My Library', lambda: ui.navigate.to('/saved'))
+                                 ui.menu_item('Profile', lambda: ui.navigate.to('/profile'))
+                                 ui.separator()
+                                 ui.menu_item('Logout', auth.logout)
+                else:
+                    # Guest - Auth Dialog
+                    with ui.dialog() as auth_dialog, ui.card().classes('w-[400px] p-6'):
+                        with ui.tabs().classes('w-full') as tabs:
+                            login_tab = ui.tab('Login')
+                            signup_tab = ui.tab('Sign Up')
+                        
+                        with ui.tab_panels(tabs, value=login_tab).classes('w-full mt-4'):
+                            with ui.tab_panel(login_tab):
+                                email_input = ui.input('Email').classes('w-full mb-2')
+                                pass_input = ui.input('Password', password=True, password_toggle_button=True).classes('w-full mb-4')
+                                
+                                async def handle_login():
+                                    u, err = auth.sign_in_with_email(email_input.value, pass_input.value)
+                                    if u:
+                                        ui.notify('Welcome back!', type='positive')
+                                        auth_dialog.close()
+                                        redirect_url = app.storage.user.get('referrer_path', '/')
+                                        ui.navigate.to(redirect_url)
+                                    else:
+                                        ui.notify(f'Login failed: {err}', type='negative')
+
+                                ui.button('Log In', on_click=handle_login).classes('w-full mb-2 bg-slate-900 text-white')
+                                ui.separator().classes('my-4')
+                                ui.button('Continue with Google', icon='img:/assets/google_logo.png', on_click=auth.login_with_google).props('outline color=slate-600').classes('w-full mb-2')
+                                ui.button('Continue with X', icon='img:/assets/x_logo.png', on_click=auth.login_with_twitter).props('outline color=slate-950 text-color=slate-900').classes('w-full')
+
+                            with ui.tab_panel(signup_tab):
+                                r_name = ui.input('Full Name').classes('w-full mb-2')
+                                r_username = ui.input('Username').classes('w-full mb-2')
+                                r_email = ui.input('Email').classes('w-full mb-2')
+                                r_pass = ui.input('Password', password=True, password_toggle_button=True).classes('w-full mb-4')
+
+                                async def handle_signup():
+                                    u, is_logged_in_or_error = auth.sign_up_with_email(r_email.value, r_pass.value, r_name.value, r_username.value)
+                                    
+                                    if u:
+                                        if is_logged_in_or_error is True:
+                                            ui.notify('Account created and logged in!', type='positive')
+                                            auth_dialog.close()
+                                            redirect_url = app.storage.user.get('referrer_path', '/')
+                                            ui.navigate.to(redirect_url)
+                                        else:
+                                            ui.notify('Account created! Please check email to confirm.', type='positive')
+                                            auth_dialog.close()
+                                    else:
+                                        # If u is None, the second arg is the error message
+                                        ui.notify(f'Signup failed: {is_logged_in_or_error}', type='negative')
+
+                                ui.button('Create Account', on_click=handle_signup).classes('w-full bg-slate-900 text-white')
+
+                    ui.button('Log In/Sign Up', on_click=auth_dialog.open).props('unelevated color=slate-900 text-color=white size=md rounded').classes('font-bold tracking-wide px-6')
 
 
 # --- ROOT DASHBOARD (CAROUSEL + IMPACT GUIDE) ---
 @ui.page('/')
 def dashboard():
+    # Set return path for login
+    app.storage.user['referrer_path'] = '/'
+
     ui.add_head_html('''
         <style>
             .q-carousel__slide { padding: 0; }
@@ -406,7 +611,7 @@ def dashboard():
 
                                         if paper.get('url'):
                                             ui.button('Read Source', icon='open_in_new',
-                                                      on_click=lambda u=paper['url']: ui.open(u)).props('flat dense size=sm color=teal-600')
+                                                      on_click=lambda u=paper['url']: ui.navigate.to(u, new_tab=True)).props('flat dense size=sm color=teal-600')
 
                     with ui.row().classes('items-center gap-4'):
                         ui.button(icon='chevron_left', on_click=carousel.previous).props(
@@ -476,9 +681,37 @@ def dashboard():
                     ui.label('Civilization-level shifts. Discoveries that fundamentally change how we live.').classes(
                         'text-xs text-slate-400 leading-relaxed font-medium')
 
+        # --- SECTION 3: CREATOR / DONATE ---
+        with ui.column().classes('w-full items-center justify-center max-w-4xl px-4 pb-20'):
+             ui.separator().classes('w-24 mb-12 opacity-30')
+             with ui.card().classes('w-full bg-white border border-slate-200 shadow-xl p-10 rounded-2xl'):
+                 with ui.row().classes('w-full items-center gap-8 no-wrap'):
+                      # Creator Image
+                      with ui.column().classes('shrink-0'):
+                          ui.image('/assets/zachpfp.jpeg').classes(
+                              'w-32 h-32 rounded-full object-cover border-4 border-slate-100 shadow-lg')
+                      
+                      # Text Content
+                      with ui.column().classes('flex-grow gap-2'):
+                          ui.label('About the Creator of Skim').classes(
+                              'text-xs font-black text-slate-400 uppercase tracking-widest mb-1')
+                          ui.label('Zach').classes(
+                              'text-3xl font-black text-slate-900 leading-tight')
+                          ui.html("I am studying electrical engineering at the University of Texas at Dallas. I created Skim while I was stuck in bed after a motorcycle accident to help encourage more intelligent conversation and <strong>more innovation</strong>.", sanitize=False).classes(
+                              'text-slate-600 font-medium leading-relaxed max-w-2xl text-base')
+                          
+                          with ui.row().classes('w-full items-center gap-4 mt-4 bg-slate-50 p-4 rounded-xl border border-slate-100'):
+                              ui.label("If you find Skim useful please consider donating to a broke college kid to help pay for AI api calls and ramen ;)").classes(
+                                  'text-slate-500 font-bold text-sm italic')
+                              ui.button('Support the Developer', icon='coffee', on_click=lambda: ui.navigate.to('https://ko-fi.com/thomaszrm', new_tab=True)).props(
+                                  'unelevated color=slate-900 text-color=white rounded-lg').classes('font-bold')
+
 
 @ui.page('/topic/{topic_name}')
 def topic_pages(topic_name: str):
+    # Set return path for login
+    app.storage.user['referrer_path'] = f'/topic/{topic_name}'
+
     ui.add_head_html('''
     <style>
         .q-item__section--avatar { min-width: 50px !important; }
@@ -704,7 +937,7 @@ def topic_pages(topic_name: str):
                     i_read_source_btn = ui.button('Read Source', icon='open_in_new').props(
                         'flat dense color=teal-700 size=sm').classes('hidden')
 
-    with ui.column().classes('w-full p-6 gap-8'):
+    with ui.column().classes('w-full min-h-[calc(100vh-80px)] bg-slate-50 p-6 gap-8'):
         results_grid = ui.grid(columns=1).classes('w-full gap-4 hidden')
         with ui.row().classes('w-full items-center justify-between mb-4'):
             feed_label = ui.label('Loading...').classes(
@@ -715,7 +948,437 @@ def topic_pages(topic_name: str):
     ui.timer(0.1, lambda: load_topic_feed(topic_name), once=True)
 
 
+
+# --- AUTH & PROFILE PAGES ---
+
+@ui.page('/auth/callback')
+def auth_callback(code: str = ''):
+    """Handles the OAuth callback."""
+    if code:
+        success = auth.handle_auth_callback(code)
+        if success:
+            ui.notify('Login successful!', type='positive')
+            # Redirect back to where they started
+            redirect_url = app.storage.user.get('referrer_path', '/')
+            ui.navigate.to(redirect_url) 
+        else:
+            ui.notify('Login failed.', type='negative')
+            ui.navigate.to('/')
+    else:
+        ui.navigate.to('/')
+
+@ui.page('/saved')
+def saved_papers_page():
+    app.storage.user['referrer_path'] = '/saved'
+    header(on_topic_click=lambda t: ui.navigate.to(f'/topic/{t}'), 
+           on_home_click=lambda: ui.navigate.to('/'))
+    
+    user = auth.get_current_user()
+    if not user:
+        ui.label('Please login to view your library.').classes('m-8 text-lg')
+        return
+
+    # --- INSPECTOR LOGIC (Copied & Adapted from topic_pages) ---
+    pinned_paper = None
+    reset_timer = None
+
+    i_category = None
+    i_icon = None
+    i_score = None
+    i_title = None
+    i_lock_btn = None
+    i_findings_container = None
+    i_impact_container = None
+    i_authors_label = None
+    default_view = None
+    info_view = None
+    i_read_source_btn = None
+
+    def cancel_reset_timer():
+        nonlocal reset_timer
+        if reset_timer:
+            reset_timer.cancel()
+            reset_timer = None
+
+    def start_reset_timer():
+        if pinned_paper:
+            return
+        nonlocal reset_timer
+        if reset_timer:
+            reset_timer.cancel()
+        reset_timer = ui.timer(0.1, hard_reset_inspector, once=True)
+
+    def hard_reset_inspector():
+        if pinned_paper:
+            return
+        if info_view:
+            info_view.classes(add='hidden')
+        if default_view:
+            default_view.classes(remove='hidden')
+
+    def toggle_pin(paper=None):
+        nonlocal pinned_paper
+        if pinned_paper and (paper is None or pinned_paper == paper):
+            pinned_paper = None
+            if i_lock_btn:
+                i_lock_btn.props('icon=lock_open color=slate-300')
+            return
+        if paper:
+            pinned_paper = paper
+            update_inspector(paper, force=True)
+            if i_lock_btn:
+                i_lock_btn.props('icon=lock color=teal')
+
+    def update_inspector(paper, force=False):
+        cancel_reset_timer()
+        if pinned_paper and not force:
+            return
+        if default_view:
+            default_view.classes(add='hidden')
+        if info_view:
+            info_view.classes(remove='hidden')
+
+        cat = paper.get('category', 'Unknown')
+        if i_category:
+            i_category.text = cat
+        if i_icon:
+            ico = get_category_icon(cat)
+            if ico:
+                i_icon.set_source(ico)
+            else:
+                i_icon.set_source('/assets/logo2.png')
+
+        score = paper.get('score', '?')
+        if i_score:
+            i_score.text = f"{score}/10"
+        if i_title:
+            i_title.text = paper['title']
+        if i_authors_label:
+            authors = paper.get('authors', 'Unknown')
+            if isinstance(authors, list):
+                authors = ", ".join(authors)
+            i_authors_label.text = authors
+        if i_read_source_btn:
+             url = paper.get('url') or paper.get('link')
+             if url:
+                 i_read_source_btn.props(f'href="{url}" target="_blank"')
+                 i_read_source_btn.classes(remove='hidden')
+             else:
+                 i_read_source_btn.classes(add='hidden')
+
+        if i_lock_btn:
+            is_pinned = (pinned_paper == paper)
+            i_lock_btn.props(
+                f'icon={"lock" if is_pinned else "lock_open"} color={"teal" if is_pinned else "slate-300"}')
+        if i_findings_container:
+            i_findings_container.clear()
+            with i_findings_container:
+                for f in paper.get('key_findings', []):
+                    ui.label(f"• {f}").classes(
+                        'text-sm text-slate-700 leading-snug font-medium')
+        if i_impact_container:
+            i_impact_container.clear()
+            with i_impact_container:
+                imps = paper.get('implications', [])
+                if isinstance(imps, list):
+                    for imp in imps:
+                        ui.label(f"➔ {imp}").classes(
+                            'text-sm text-slate-800 leading-snug')
+                else:
+                    ui.markdown(str(imps)).classes('text-sm leading-snug')
+
+    # --- LAYOUT ---
+    
+    # Right Drawer (Inspector)
+    drawer = ui.right_drawer(value=True).props('width=450').classes(
+        'bg-slate-50 border-l border-slate-200 p-6 column no-wrap gap-4')
+    drawer.on('mouseenter', cancel_reset_timer)
+    drawer.on('mouseleave', lambda: start_reset_timer())
+
+    with drawer:
+        with ui.row().classes('w-full items-center gap-2'):
+            ui.icon('manage_search').classes('text-base text-slate-400')
+            ui.label('Inspector').classes(
+                'text-sm font-bold text-slate-400 uppercase tracking-wider')
+
+        with ui.column().classes('w-full flex-grow relative transition-all overflow-hidden'):
+            with ui.column().classes('w-full h-full items-center justify-center text-center') as default_view:
+                ui.image(
+                    '/assets/logo2.png').classes('w-32 h-32 mb-4')
+                ui.label('Hover a card to inspect').classes(
+                    'text-lg font-bold text-slate-400')
+
+            with ui.column().classes('hidden w-full flex-grow bg-white rounded-xl border border-slate-200 shadow-md animate-fade overflow-hidden') as info_view:
+                with ui.row().classes('w-full justify-between items-center p-6 border-b border-slate-100 bg-slate-50'):
+                    with ui.row().classes('items-center gap-3'):
+                        i_icon = ui.image().classes('w-16 h-16')
+                        i_category = ui.label('Category').classes(
+                            'text-xs font-bold text-teal-600 uppercase tracking-wide')
+                    with ui.row().classes('items-center gap-2'):
+                        i_score = ui.badge(
+                            '0/10', color='teal').props('outline size=md')
+                        i_lock_btn = ui.button(icon='lock_open').props(
+                            'flat round dense color=slate-300').on('click', lambda: toggle_pin(None))
+                        ui.tooltip(
+                            'Click card to Pin/Unpin').classes('bg-slate-800 text-white')
+
+                with ui.scroll_area().classes('w-full p-6 flex-grow'):
+                    i_title = ui.label('Paper Title').classes(
+                        'text-lg font-black text-slate-800 leading-snug mb-6')
+                    ui.label('CORE FINDINGS').classes(
+                        'text-xs font-bold text-slate-400 uppercase mb-2 tracking-wider')
+                    i_findings_container = ui.column().classes('w-full gap-3 mb-6')
+                    ui.separator().classes('mb-6 opacity-50')
+                    ui.label('IMPLICATIONS').classes(
+                        'text-xs font-bold text-slate-400 uppercase mb-2 tracking-wider')
+                    i_impact_container = ui.column().classes('w-full gap-3')
+
+                with ui.row().classes('w-full p-4 bg-slate-50 border-t border-slate-100 mt-auto justify-between items-end'):
+                    with ui.column().classes('gap-0'):
+                        ui.label('AUTHORS').classes(
+                            'text-[10px] font-bold text-slate-400 tracking-wider mb-1')
+                        i_authors_label = ui.label('Loading...').classes(
+                            'text-xs text-slate-600 italic leading-tight')
+                    i_read_source_btn = ui.button('Read Source', icon='open_in_new').props(
+                        'flat dense color=teal-700 size=sm').classes('hidden')
+
+    # Main Content
+    favorites = database.get_favorites(user['id'])
+    
+    with ui.column().classes('w-full min-h-[calc(100vh-80px)] bg-slate-50 p-6 gap-8'):
+        with ui.row().classes('w-full items-center justify-between mb-4'):
+            with ui.row().classes('items-center gap-4'):
+                ui.icon('favorite', size='lg').classes('text-red-500')
+                ui.label('My Library').classes('text-3xl font-black text-slate-800')
+                ui.label(f"{len(favorites)} Saved Articles").classes('text-slate-500 font-bold uppercase tracking-wider text-sm')
+
+        if not favorites:
+             ui.label("You haven't saved any papers yet.").classes('text-slate-400 italic mt-8')
+        else:
+            # Handler for removal that also clears inspector
+            def handle_remove_paper(p, w):
+                 w.delete()
+                 nonlocal pinned_paper
+                 if pinned_paper == p:
+                     pinned_paper = None
+                 # Force reset inspector (show default view)
+                 if info_view and default_view:
+                     info_view.classes(add='hidden')
+                     default_view.classes(remove='hidden')
+
+            grid = ui.grid(columns=2).classes('w-full gap-6')
+            with grid:
+                for paper in favorites:
+                    # Mark as saved so heart icon shows correctly
+                    paper['_is_saved'] = True 
+                    
+                    # Wrapper for deletion
+                    wrapper = ui.element('div').classes('w-full')
+                    
+                    # Use closure to capture wrapper for deletion
+                    def make_card(p, w):
+                         display_curated_card(w, p, on_hover=update_inspector,
+                                              on_leave=lambda: start_reset_timer(), 
+                                              on_click=toggle_pin,
+                                              on_unfavorite=lambda _: handle_remove_paper(p, w))
+                    make_card(paper, wrapper)
+
+@ui.page('/profile')
+def profile_page():
+    app.storage.user['referrer_path'] = '/profile'
+    header(on_topic_click=lambda t: ui.navigate.to(f'/topic/{t}'), 
+           on_home_click=lambda: ui.navigate.to('/'))
+    
+    user = auth.get_current_user()
+    if not user:
+        ui.label('Please login to view your profile.').classes('m-8 text-lg')
+        return
+
+    # Fetch profile
+    profile = database.get_profile(user['id']) or {}
+    
+    with ui.column().classes('w-full min-h-screen bg-slate-50 p-8 items-center'):
+        with ui.card().classes('w-full max-w-2xl p-8 gap-6'):
+            with ui.row().classes('w-full justify-between items-center mb-4'):
+                ui.label('Edit Profile').classes('text-2xl font-black text-slate-800')
+                
+                # Right Side Actions (Avatar + X)
+                with ui.row().classes('items-center gap-4'):
+                    # Avatar Upload
+                    avatar_url = profile.get('avatar_url')
+                    
+                    # Hidden uploader
+                    uploader = ui.upload(auto_upload=True, on_upload=lambda e: handle_avatar_upload(e)).props('accept=.jpg,.jpeg,.png,.webp style="display: none;"')
+                    
+                    async def handle_avatar_upload(e):
+                        # NiceGUI 2.0+ uses e.file, older uses e.content
+                        msg = getattr(e, 'file', None) or getattr(e, 'content', None)
+                        
+                        if not msg:
+                            return
+
+                        # Size check
+                        size_attr = getattr(msg, 'size', 0)
+                        file_size = size_attr() if callable(size_attr) else size_attr
+                        if file_size > 5 * 1024 * 1024:
+                            ui.notify('File too large (max 5MB)', type='negative')
+                            return
+                        
+                        # Content
+                        # If read is a method
+                        if callable(getattr(msg, 'read', None)):
+                            content = await msg.read()
+                        else:
+                            content = msg
+                        
+                        # Determine ext
+                        filename = getattr(msg, 'name', 'avatar.png')
+                        ext = filename.split('.')[-1].lower()
+                        if ext not in ['jpg', 'jpeg', 'png', 'webp']:
+                            ui.notify('Invalid file type', type='negative')
+                            return
+
+                        # Prepare for Cropping
+                        try:
+                            b64_data = base64.b64encode(content).decode('utf-8')
+                            data_url = f"data:image/{ext};base64,{b64_data}"
+                        except Exception as err:
+                             print(f"Error encoding image: {err}")
+                             return
+
+                        # Open Crop Dialog
+                        with ui.dialog().props('persistent') as crop_dialog, ui.card().classes('w-auto min-w-[350px] max-w-[90vw] p-0 overflow-hidden flex flex-col'):
+                            # Header
+                            with ui.row().classes('w-full p-4 bg-slate-50 border-b justify-between items-center'):
+                                ui.label('Crop Avatar').classes('font-bold text-lg')
+                                ui.button(icon='close', on_click=crop_dialog.close).props('flat round dense')
+                            
+                            # Cropper Area (Flexible)
+                            # We set max constraints so it doesn't overflow screen
+                            with ui.element('div').classes('min-w-[300px] min-h-[300px] max-h-[70vh] bg-black relative flex justify-center'):
+                                # Image max-height matches container max-height to avoid overflow
+                                ui.html(f'<img id="avatar-cropper-img" src="{data_url}" style="max-height: 70vh; max-width: 100%; display: block;">', sanitize=False)
+                            
+                            # Actions
+                            async def save_crop():
+                                ui.notify('Processing...', type='info')
+                                try:
+                                    # Get Crop Data from JS
+                                    crop_data = await ui.run_javascript('return window.cropper.getData();', timeout=3.0)
+                                    
+                                    if not crop_data:
+                                        ui.notify('Error getting crop data', type='negative')
+                                        return
+
+                                    # Process in Python
+                                    with Image.open(io.BytesIO(content)) as img:
+                                        # Crop
+                                        x = int(crop_data['x'])
+                                        y = int(crop_data['y'])
+                                        w = int(crop_data['width'])
+                                        h = int(crop_data['height'])
+                                        
+                                        # Sanity bounds
+                                        cropped = img.crop((x, y, x+w, y+h))
+                                        
+                                        # Resize to standard avatar (256x256) (High Quality)
+                                        final_img = cropped.resize((256, 256), Image.Resampling.LANCZOS)
+                                        
+                                        # Save to bytes (PNG for quality)
+                                        out_buffer = io.BytesIO()
+                                        final_img.save(out_buffer, format='PNG')
+                                        final_bytes = out_buffer.getvalue()
+                                        
+                                        # Upload
+                                        token = user.get('access_token')
+                                        new_url = database.upload_avatar(user['id'], final_bytes, 'png', access_token=token)
+                                        
+                                        if new_url:
+                                            ui.notify('Avatar updated!', type='positive')
+                                            # Update Session
+                                            if 'user' in app.storage.user:
+                                                app.storage.user['user']['avatar_url'] = new_url
+                                                if 'metadata' not in app.storage.user['user']:
+                                                     app.storage.user['user']['metadata'] = {}
+                                                app.storage.user['user']['metadata']['avatar_url'] = new_url
+                                            
+                                            crop_dialog.close()
+                                            ui.navigate.to('/profile', new_tab=False)
+                                        else:
+                                            ui.notify('Upload failed', type='negative')
+
+                                except Exception as err:
+                                    print(f"Crop error: {err}")
+                                    ui.notify('Error processing image', type='negative')
+
+                            with ui.row().classes('w-full p-4 gap-4 justify-between bg-slate-50 border-t'):
+                                with ui.row().classes('gap-2'):
+                                    ui.button(icon='zoom_out', on_click=lambda: ui.run_javascript('window.cropper.zoom(-0.1)')).props('flat outline round dense color=slate-600')
+                                    ui.button(icon='zoom_in', on_click=lambda: ui.run_javascript('window.cropper.zoom(0.1)')).props('flat outline round dense color=slate-600')
+                                
+                                with ui.row().classes('gap-4'):
+                                    ui.button('Cancel', on_click=crop_dialog.close).props('flat text-color=slate-600')
+                                    ui.button('Save Avatar', on_click=save_crop).classes('bg-slate-900 text-white')
+                        
+                        crop_dialog.open()
+                        # Initialize Cropper JS
+                        await ui.run_javascript('''
+                            if (window.cropper) { window.cropper.destroy(); }
+                            var image = document.getElementById('avatar-cropper-img');
+                            window.cropper = new Cropper(image, {
+                                aspectRatio: 1,
+                                viewMode: 0, 
+                                dragMode: 'move',
+                                autoCropArea: 1,
+                                background: false
+                            });
+                        ''', timeout=10.0)
+
+                    # Avatar Circle
+                    with ui.button(on_click=lambda: uploader.run_method('pickFiles')).props('round flat p-0').classes('overflow-hidden w-12 h-12 border-2 border-slate-200'):
+                        if avatar_url:
+                            ui.image(avatar_url).classes('w-full h-full object-cover')
+                        else:
+                            ui.icon('account_circle', size='xl').classes('text-slate-300')
+                        ui.tooltip('Click to change profile picture')
+                    
+                    # X Link Button (Success or Connect)
+                    current_x = profile.get('x_handle')
+                    if current_x:
+                        with ui.chip(icon='check', color='slate-100').props('removable').classes('text-slate-600') as chip:
+                            with chip.add_slot('avatar'):
+                                 ui.image('/assets/x_logo.png')
+                            ui.label(current_x)
+                            # Optional: Add logic to unlink if chip is removed
+                            chip.on('remove', lambda: ui.notify('To unlink, please contact support.', type='warning')) 
+                    else:
+                        ui.button(icon='img:/assets/x_logo.png', on_click=auth.login_with_twitter).props('flat round color=slate-800 size=xl').tooltip('Connect X Account')
+
+            with ui.column().classes('w-full gap-4'):
+                ui.label('Email').classes('text-sm text-slate-400 font-bold uppercase')
+                ui.label(user.get('email')).classes('text-slate-700 font-medium')
+                
+                ui.separator()
+                
+                username = ui.input(label='Username', value=profile.get('username', '')).classes('w-full')
+                fullname = ui.input(label='Full Name', value=profile.get('full_name', '')).classes('w-full')
+                
+                async def save_profile():
+                    updates = {
+                        'username': username.value,
+                        'full_name': fullname.value,
+                        'updated_at': 'now()'
+                    }
+                    res = database.update_profile(user['id'], updates)
+                    if res:
+                         ui.notify('Profile updated!', type='positive')
+                    else:
+                         ui.notify('Error updating profile.', type='negative')
+
+                ui.button('Save Changes', on_click=save_profile).props('unelevated color=slate-900 text-color=white').classes('w-full')
+
+
 if __name__ in {"__main__", "__mp_main__"}:
     port = int(os.environ.get("PORT", 8080))
     ui.run(title='Skim', favicon='assets/logo.png', port=port,
-           host='0.0.0.0', storage_secret='skim_secret_key')
+           host='0.0.0.0', storage_secret='skim_secret_key', reload=False)

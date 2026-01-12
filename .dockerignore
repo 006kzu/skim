@@ -1,0 +1,11 @@
+# Ignore local environment files
+.env
+venv/
+__pycache__/
+.git/
+.github/
+.DS_Store
+*.pyc
+
+# Ignore NiceGUI storage if local
+.nicegui/
