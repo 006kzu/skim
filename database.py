@@ -307,3 +307,101 @@ def is_favorite(user_id, paper_id):
         return len(res.data) > 0
     except Exception as e:
         return False
+
+# --- COMMENTS ---
+
+def get_comments(paper_id):
+    """Fetches comments for a paper, including user profile info."""
+    if not supabase:
+        return []
+    try:
+        # Join with profiles to get username, full_name, avatar_url
+        res = supabase.table("comments").select(
+            "*, profiles(username, full_name, avatar_url)"
+        ).eq("paper_id", paper_id).order("created_at", desc=True).execute()
+        return res.data
+    except Exception as e:
+        print(f"Error fetching comments: {e}")
+        return []
+
+# --- NOTIFICATIONS & REPLIES ---
+
+def get_notifications(user_id):
+    if not supabase: return []
+    try:
+        # Fetch notifications with the actor's profile
+        res = supabase.table("notifications").select(
+            "*, actor:profiles!actor_id(username, avatar_url), resource:comments(content, paper_id)"
+        ).eq("user_id", user_id).order("created_at", desc=True).limit(20).execute()
+        return res.data
+    except Exception as e:
+        print(f"Error fetching notifications: {e}")
+        return []
+
+def mark_notification_read(notif_id):
+    if not supabase: return False
+    try:
+        supabase.table("notifications").update({"is_read": True}).eq("id", notif_id).execute()
+        return True
+    except Exception as e:
+        print(f"Error marking notification read: {e}")
+        return False
+
+def mark_all_notifications_read(user_id):
+    if not supabase: return False
+    try:
+        supabase.table("notifications").update({"is_read": True}).eq("user_id", user_id).eq("is_read", False).execute()
+        return True
+    except Exception as e:
+        print(f"Error marking all notifications read: {e}")
+        return False
+
+def create_notification(recipient_id, actor_id, resource_id):
+    """
+    Creates a notification for a user.
+    """
+    if not supabase: return
+    if recipient_id == actor_id: return # Don't notify self
+    
+    try:
+        # Use RPC to bypass RLS
+        supabase.rpc("create_notification_safe", {
+            "recipient_id": recipient_id,
+            "sender_id": actor_id,
+            "comment_id": resource_id
+        }).execute()
+    except Exception as e:
+        print(f"Error creating notification: {e}")
+
+def add_comment(user_id, paper_id, content, parent_id=None):
+    if not supabase:
+        return None
+    try:
+        data = {
+            "user_id": user_id,
+            "paper_id": paper_id,
+            "content": content
+        }
+        if parent_id:
+            data["parent_id"] = parent_id
+            
+        res = supabase.table("comments").insert(data).execute()
+        
+        # logical next step: Check if reply, trigger notification
+        if res.data and len(res.data) > 0:
+            new_comment = res.data[0]
+            new_comment_id = new_comment['id']
+            
+            if parent_id:
+                # 1. Fetch parent comment to get the original author
+                parent_res = supabase.table("comments").select("user_id").eq("id", parent_id).single().execute()
+                if parent_res.data:
+                    parent_author_id = parent_res.data['user_id']
+                    # 2. Create Notification
+                    create_notification(parent_author_id, user_id, new_comment_id)
+            
+            return new_comment
+        return None
+    except Exception as e:
+        print(f"Error adding comment: {e}")
+        return None

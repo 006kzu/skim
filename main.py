@@ -7,6 +7,7 @@ import re
 import auth
 import base64
 import io
+import time
 from PIL import Image
 
 # --- INITIALIZATION ---
@@ -319,7 +320,7 @@ def display_curated_card(container, paper, on_hover=None, on_leave=None, on_clic
                     title_text, highlights, theme['highlight_hex'])
 
                 ui.html(processed_title, sanitize=False).classes(
-                    f"text-xl font-black leading-tight line-clamp-3 w-full {theme['text_title']}")
+                    f"text-xl font-black leading-tight w-full {theme['text_title']}")
                 ui.label(paper.get('summary', 'No summary')).classes(
                     f"text-sm leading-relaxed line-clamp-6 w-full {theme['text_body']}")
 
@@ -339,7 +340,7 @@ def display_curated_card(container, paper, on_hover=None, on_leave=None, on_clic
 
 
 def header(on_topic_click=None, on_home_click=None, on_search=None):
-    with ui.header().classes('bg-white text-slate-800 border-b border-slate-200 elevation-0'):
+    with ui.header().classes('bg-white text-slate-800 border-b border-slate-200 elevation-0 z-50'):
         with ui.row().classes('w-full items-center justify-between h-20 px-6 no-wrap gap-8'):
             with ui.row().classes('items-center cursor-pointer min-w-max').on('click', on_home_click):
                 ui.image('/assets/logo.png').classes('w-10 h-10 mr-3')
@@ -365,6 +366,49 @@ def header(on_topic_click=None, on_home_click=None, on_search=None):
                 search_input.on('keydown.enter', handle_search)
 
             with ui.row().classes('items-center gap-4 min-w-max'):
+                # --- Notification Bell ---
+                user = auth.get_current_user()
+                if user:
+                    # Fetch only recent ones for header
+                    notifs = database.get_notifications(user['id'])
+                    unread_count = len([n for n in notifs if not n.get('is_read')])
+                    
+                    with ui.button(icon='notifications').props('flat round dense color=slate-600').classes('relative'):
+                        badge = None
+                        if unread_count > 0:
+                            badge = ui.badge(unread_count, color='red').props('floating rounded align=top')
+                        
+                        async def mark_seen():
+                            if unread_count > 0:
+                                await run.io_bound(database.mark_all_notifications_read, user['id'])
+                                if badge: badge.set_visibility(False)
+                        
+                        with ui.menu().classes('bg-white border border-slate-200 shadow-xl rounded-xl w-80 p-0 z-[9999]').props('auto-close fit anchor="bottom right" self="top right" offset=[0, 10]').on('show', mark_seen):
+                            with ui.column().classes('w-full gap-0'):
+                                 ui.label('Notifications').classes('p-4 font-bold text-slate-700 border-b border-slate-100')
+                                 
+                                 if not notifs:
+                                      ui.label('No notifications').classes('p-4 text-sm text-slate-400 italic')
+                                 
+                                 with ui.scroll_area().classes('max-h-60 w-full'):
+                                     for n in notifs:
+                                         actor = n.get('actor') or {}
+                                         resource = n.get('resource') or {}
+                                         bg_class = 'bg-slate-50' if not n.get('is_read') else 'bg-white'
+                                         
+                                         with ui.item().classes(f'w-full p-3 border-b border-slate-50 {bg_class} transition-colors'):
+                                             with ui.row().classes('items-start gap-3 no-wrap w-full'):
+                                                 # Avatar
+                                                 ava = actor.get('avatar_url')
+                                                 if ava:
+                                                     ui.image(ava).classes('w-8 h-8 rounded-full object-cover min-w-[2rem]')
+                                                 else:
+                                                     ui.icon('account_circle').classes('text-2xl text-slate-300')
+                                                 
+                                                 with ui.column().classes('gap-0 flex-grow'):
+                                                      name = actor.get('username') or 'Someone'
+                                                      ui.label(f"{name} replied").classes('text-xs font-bold text-slate-700')
+                                                      ui.label(resource.get('content', '')[:50] + '...').classes('text-[10px] text-slate-500 leading-tight break-all')
                 hub_btn = ui.button('Research Hub', icon='apps').props('flat no-caps color=slate-800 size=md icon-right=arrow_drop_down').classes(
                     'font-bold tracking-tight bg-slate-100 hover:bg-slate-200 rounded-lg px-3')
 
@@ -598,7 +642,7 @@ def dashboard():
 
                                 with ui.column().classes(f"w-2/3 h-full {theme['card_bg']} p-6 justify-evenly"):
                                     ui.label(paper.get('title')).classes(
-                                        f"{theme['text_title']} text-xl font-black leading-tight line-clamp-2")
+                                        f"{theme['text_title']} text-xl font-black leading-tight")
 
                                     summary = paper.get(
                                         'summary', 'No summary available.')
@@ -721,6 +765,206 @@ def topic_pages(topic_name: str):
     </style>
     ''')
 
+    # --- Comment Helpers ---
+    def build_comment_tree(comments):
+        """
+        Organizes a flat list of comments into a tree structure.
+        """
+        comment_map = {c['id']: c for c in comments}
+        roots = []
+        for c in comments:
+            c['replies'] = []
+            
+        for c in comments:
+            pid = c.get('parent_id')
+            if pid and pid in comment_map:
+                comment_map[pid]['replies'].append(c)
+            else:
+                roots.append(c)
+        roots.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        return roots
+
+    def render_comment_tree(nodes, depth=0, user=None, on_reply=None, active_reply_id=None, on_submit_reply=None, cancel_reply=None):
+        """
+        Recursively renders comments.
+        """
+        for c in nodes:
+            prof = c.get('profiles') or {}
+            
+            # Container for this comment and its children
+            with ui.column().classes(f'w-full gap-2 {"ml-8 border-l-2 border-slate-100 pl-4" if depth > 0 else "mb-6"}'):
+                
+                # Comment Header
+                with ui.row().classes('items-center gap-2 w-full'):
+                    # Avatar
+                    ava = prof.get('avatar_url')
+                    if ava:
+                        ui.image(ava).classes('w-6 h-6 rounded-full object-cover border border-slate-200 shadow-sm shrink-0')
+                    else:
+                        ui.icon('account_circle', size='sm').classes('text-slate-300 shrink-0')
+                    
+                    # Name & Date
+                    name = prof.get('full_name') or prof.get('username') or 'Anonymous'
+                    ui.label(name).classes('text-xs font-bold text-slate-700')
+                    
+                    date_str = c.get('created_at', '')[:10]
+                    ui.label(date_str).classes('text-[10px] text-slate-400 font-medium')
+                    
+                    # Reply Button
+                    if user:
+                        ui.button(icon='reply', on_click=lambda cid=c['id'], cname=name: on_reply(cid, cname)).props(
+                            'flat round dense size=xs color=slate-400').tooltip('Reply')
+                
+                # Comment Body
+                ui.label(c['content']).classes('text-sm text-slate-600 leading-relaxed font-medium break-words whitespace-pre-wrap ml-8')
+                
+                # Inline Reply Input
+                if user and active_reply_id == c['id']:
+                    with ui.column().classes('ml-8 w-full gap-2 mt-2 p-3 bg-slate-50 rounded-lg border border-slate-200 animate-fade'):
+                        reply_input = ui.textarea(placeholder=f'Replying to {prof.get("username") or "Anonymous"}...').props(
+                            'rows=2 auto-grow outlined flat class="text-sm bg-white"').classes('w-full')
+                        reply_input.run_method('focus')
+                        
+                        async def submit_inline():
+                            if on_submit_reply:
+                                await on_submit_reply(c['id'], reply_input.value)
+                        
+                        reply_input.on('keydown.enter.prevent', submit_inline)
+                        
+                        with ui.row().classes('w-full justify-end gap-2'):
+                            ui.button('Cancel', on_click=cancel_reply).props(
+                                'flat dense no-caps color=slate-500').classes('text-xs font-bold')
+                            ui.button('Reply', on_click=submit_inline).props(
+                                'unelevated dense no-caps color=teal-600 text-color=white').classes('px-3 text-xs font-bold rounded-md')
+
+                # Render Children
+                if c.get('replies'):
+                    render_comment_tree(c['replies'], depth=depth+1, user=user, on_reply=on_reply, active_reply_id=active_reply_id, on_submit_reply=on_submit_reply, cancel_reply=cancel_reply)
+
+    def open_comment_modal(paper, user_obj):
+        """
+        Opens a modal dialog for comments.
+        """
+        with ui.dialog() as dialog, ui.card().classes('w-full max-w-6xl h-[80vh] p-0 gap-0 no-shadow border-none rounded-xl overflow-hidden'):
+            dialog.open()
+            
+            # Header
+            with ui.row().classes('w-full items-center justify-between p-4 bg-slate-50 border-b border-slate-200'):
+                with ui.row().classes('items-center gap-2'):
+                    ui.icon('forum', size='sm').classes('text-slate-400')
+                    ui.label('Conversation').classes('text-sm font-bold text-slate-700 uppercase tracking-widest')
+                ui.button(icon='close', on_click=dialog.close).props('flat round dense color=slate-400')
+            
+            # Body (Split View)
+            with ui.row().classes('w-full flex-grow overflow-hidden p-0 gap-0 bg-white'):
+                
+                # Left Panel: Article Context
+                with ui.column().classes('w-1/3 h-full overflow-y-auto p-6 border-r border-slate-100 bg-slate-50 gap-6'):
+                    
+                    # Title
+                    ui.label(paper.get('title', 'Unknown Paper')).classes('text-xl font-black text-slate-800 leading-tight')
+                    
+                    # Read Source Button
+                    url = paper.get('url') or paper.get('link')
+                    if url:
+                        ui.button('Read Source', icon='open_in_new', on_click=lambda: ui.open(url, new_tab=True)).props('unelevated no-caps color=teal-700 w-full')
+                    
+                    ui.separator().classes('opacity-50')
+                    
+                    # Key Findings
+                    if paper.get('key_findings'):
+                        with ui.column().classes('gap-2'):
+                            ui.label('KEY FINDINGS').classes('text-xs font-bold text-slate-400 uppercase tracking-widest')
+                            for f in paper.get('key_findings', []):
+                                ui.label(f"• {f}").classes('text-sm text-slate-700 leading-snug font-medium')
+                                
+                    # Implications
+                    if paper.get('implications'):
+                        with ui.column().classes('gap-2'):
+                            ui.label('IMPLICATIONS').classes('text-xs font-bold text-slate-400 uppercase tracking-widest')
+                            imps = paper.get('implications', [])
+                            if isinstance(imps, list):
+                                for imp in imps:
+                                    ui.label(f"➔ {imp}").classes('text-sm text-slate-700 leading-snug')
+                            else:
+                                ui.markdown(str(imps)).classes('text-sm leading-snug')
+
+                # Right Panel: Discussion (Scrollable)
+                content_area = ui.column().classes('w-2/3 h-full overflow-y-auto p-6 gap-6')
+            
+            # State
+            reply_ctx = {'id': None}
+            active_reply_id = None
+            
+            async def refresh_list():
+                content_area.clear()
+                comments = await run.io_bound(database.get_comments, paper['id'])
+                
+                with content_area:
+                    # 1. Main Input (Top)
+                    user = auth.get_current_user() # Refresh user state
+                    
+                    with ui.column().classes('w-full items-stretch gap-2 mb-4'):
+                         with ui.row().classes('items-center gap-2 mb-1'):
+                            if user:
+                                avatar = user.get('avatar_url') or user.get('metadata', {}).get('avatar_url')
+                                if avatar:
+                                    ui.image(avatar).classes('w-6 h-6 rounded-full object-cover border border-slate-200 shadow-sm')
+                                else:
+                                    ui.icon('account_circle', size='sm').classes('text-slate-300')
+                                ui.label('Join the conversation').classes('text-xs font-bold text-slate-500 uppercase tracking-widest')
+                            else:
+                                ui.icon('lock', size='sm').classes('text-slate-300')
+                                ui.label('Login to comment').classes('text-xs font-bold text-slate-400 uppercase tracking-widest')
+                         
+                         if user:
+                            c_input = ui.textarea(placeholder='Write a comment...').props(
+                                'rows=2 auto-grow outlined flat class="text-sm"').classes('w-full bg-slate-50 rounded-lg')
+                            
+                            async def submit_main():
+                                if not c_input.value or not c_input.value.strip(): return
+                                await run.io_bound(database.add_comment, user['id'], paper['id'], c_input.value, None)
+                                await refresh_list()
+                            
+                            c_input.on('keydown.enter.prevent', submit_main)
+                            with ui.row().classes('w-full justify-end mt-2'):
+                                ui.button('Post', icon='send', on_click=submit_main).props(
+                                    'unelevated no-caps color=teal-600 text-color=white dense').classes('px-4 rounded-full font-bold')
+                         else:
+                            ui.textarea(placeholder='Login to share your thoughts').props(
+                                'disable rows=2 outlined flat class="text-sm"').classes('w-full opacity-60 bg-slate-50 rounded-lg')
+                    
+                    ui.separator().classes('my-4 opacity-30')
+                    
+                    # 2. List
+                    if not comments:
+                         ui.label('No comments yet. Be the first!').classes('text-xs text-slate-400 italic pl-2')
+                    else:
+                        roots = build_comment_tree(comments)
+                        
+                        # Callbacks
+                        async def on_reply_click(cid, cname):
+                             nonlocal active_reply_id
+                             active_reply_id = cid
+                             await refresh_list()
+                        
+                        async def on_cancel_reply():
+                             nonlocal active_reply_id
+                             active_reply_id = None
+                             await refresh_list()
+                             
+                        async def on_submit_reply(pid, content):
+                             if not content or not content.strip(): return
+                             nonlocal active_reply_id
+                             await run.io_bound(database.add_comment, user['id'], paper['id'], content, pid)
+                             active_reply_id = None
+                             await refresh_list()
+
+                        render_comment_tree(roots, user=user, on_reply=on_reply_click, active_reply_id=active_reply_id, on_submit_reply=on_submit_reply, cancel_reply=on_cancel_reply)
+
+            # Initial Load
+            ui.timer(0.1, refresh_list, once=True)
+
     feed_label = None
     feed_grid = None
     pinned_paper = None
@@ -733,12 +977,20 @@ def topic_pages(topic_name: str):
     i_lock_btn = None
     i_findings_container = None
     i_impact_container = None
+    i_comments_container = None
     i_authors_label = None
     default_view = None
     info_view = None
     i_read_source_btn = None
+    i_comment_btn = None
+    i_actions_container = None
 
     reset_timer = None
+    
+    # State for scroll reset
+    last_paper_id = None
+    last_hover_time = 0.0
+    i_scroll_area = None
 
     def go_home():
         ui.navigate.to('/')
@@ -808,6 +1060,26 @@ def topic_pages(topic_name: str):
         if info_view:
             info_view.classes(remove='hidden')
 
+        # Scroll Reset Logic
+        nonlocal last_paper_id, last_hover_time
+        current_time = time.time()
+        
+        # Scenario A: New Paper -> Always Reset
+        if paper['id'] != last_paper_id:
+            if i_scroll_area:
+                i_scroll_area.scroll_to(percent=0.0, duration=0)
+            last_paper_id = paper['id']
+            last_hover_time = current_time
+            
+        # Scenario B: Same Paper, but "Long" Absence -> Reset
+        elif (current_time - last_hover_time) > 5.0:
+            if i_scroll_area:
+                i_scroll_area.scroll_to(percent=0.0, duration=0)
+            last_hover_time = current_time
+        else:
+            # Short absence -> maintain scroll, update timestamp
+            last_hover_time = current_time
+
         cat = paper.get('category', 'Unknown')
         if i_category:
             i_category.text = cat
@@ -822,19 +1094,16 @@ def topic_pages(topic_name: str):
         if i_score:
             i_score.text = f"{score}/10"
         if i_title:
-            i_title.text = paper['title']
+            # Highlight Logic
+            theme = get_impact_theme(paper)
+            highlights = paper.get('title_highlights') or []
+            processed_title = highlight_title(paper['title'], highlights, theme['highlight_hex'])
+            i_title.content = processed_title
         if i_authors_label:
             authors = paper.get('authors', 'Unknown')
             if isinstance(authors, list):
                 authors = ", ".join(authors)
             i_authors_label.text = authors
-        if i_read_source_btn:
-            url = paper.get('url') or paper.get('link')
-            if url:
-                i_read_source_btn.props(f'href="{url}" target="_blank"')
-                i_read_source_btn.classes(remove='hidden')
-            else:
-                i_read_source_btn.classes(add='hidden')
         if i_lock_btn:
             is_pinned = (pinned_paper == paper)
             i_lock_btn.props(
@@ -855,6 +1124,42 @@ def topic_pages(topic_name: str):
                             'text-sm text-slate-800 leading-snug')
                 else:
                     ui.markdown(str(imps)).classes('text-sm leading-snug')
+
+        if i_actions_container:
+            i_actions_container.clear()
+            with i_actions_container:
+                 # Comment Button
+                 user = auth.get_current_user()
+                 # Use icon-only button, green (teal-600)
+                 ui.button(icon='forum', on_click=lambda: open_comment_modal(paper, user)) \
+                    .props('flat round color=teal-600').tooltip('Join Conversation')
+                 
+                 # Read Source Button
+                 url = paper.get('url') or paper.get('link')
+                 if url:
+                     ui.button('Read Source', icon='open_in_new') \
+                        .props(f'flat dense color=teal-700 size=sm href="{url}" target="_blank"')
+
+                    
+
+
+
+
+
+                
+
+
+                            
+ 
+
+
+
+
+
+
+
+
+
 
     def render_feed(papers, title):
         if feed_label:
@@ -891,10 +1196,15 @@ def topic_pages(topic_name: str):
     drawer.on('mouseleave', lambda: start_reset_timer())
 
     with drawer:
-        with ui.row().classes('w-full items-center gap-2'):
-            ui.icon('manage_search').classes('text-base text-slate-400')
-            ui.label('Inspector').classes(
-                'text-sm font-bold text-slate-400 uppercase tracking-wider')
+        with ui.row().classes('w-full items-center justify-between'):
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('manage_search').classes('text-base text-slate-400')
+                ui.label('Inspector').classes(
+                    'text-sm font-bold text-slate-400 uppercase tracking-wider')
+            
+            i_lock_btn = ui.button(icon='lock_open').props(
+                'flat round dense color=slate-300').on('click', lambda: toggle_pin(None))
+            ui.tooltip('Click card to Pin/Unpin').classes('bg-slate-800 text-white')
 
         with ui.column().classes('w-full flex-grow relative transition-all overflow-hidden'):
             with ui.column().classes('w-full h-full items-center justify-center text-center') as default_view:
@@ -912,13 +1222,9 @@ def topic_pages(topic_name: str):
                     with ui.row().classes('items-center gap-2'):
                         i_score = ui.badge(
                             '0/10', color='teal').props('outline size=md')
-                        i_lock_btn = ui.button(icon='lock_open').props(
-                            'flat round dense color=slate-300').on('click', lambda: toggle_pin(None))
-                        ui.tooltip(
-                            'Click card to Pin/Unpin').classes('bg-slate-800 text-white')
 
-                with ui.scroll_area().classes('w-full p-6 flex-grow'):
-                    i_title = ui.label('Paper Title').classes(
+                with ui.scroll_area().classes('w-full p-6 flex-grow') as i_scroll_area:
+                    i_title = ui.html('Paper Title', sanitize=False).classes(
                         'text-lg font-black text-slate-800 leading-snug mb-6')
                     ui.label('CORE FINDINGS').classes(
                         'text-xs font-bold text-slate-400 uppercase mb-2 tracking-wider')
@@ -927,15 +1233,17 @@ def topic_pages(topic_name: str):
                     ui.label('IMPLICATIONS').classes(
                         'text-xs font-bold text-slate-400 uppercase mb-2 tracking-wider')
                     i_impact_container = ui.column().classes('w-full gap-3')
-
-                with ui.row().classes('w-full p-4 bg-slate-50 border-t border-slate-100 mt-auto justify-between items-end'):
+                    
+                    
+                with ui.row().classes('w-full p-4 bg-slate-50 border-t border-slate-100 mt-auto justify-between items-center'):
                     with ui.column().classes('gap-0'):
                         ui.label('AUTHORS').classes(
                             'text-[10px] font-bold text-slate-400 tracking-wider mb-1')
                         i_authors_label = ui.label('Loading...').classes(
                             'text-xs text-slate-600 italic leading-tight')
-                    i_read_source_btn = ui.button('Read Source', icon='open_in_new').props(
-                        'flat dense color=teal-700 size=sm').classes('hidden')
+                    
+                    with ui.row().classes('items-center gap-2') as i_actions_container:
+                        pass
 
     with ui.column().classes('w-full min-h-[calc(100vh-80px)] bg-slate-50 p-6 gap-8'):
         results_grid = ui.grid(columns=1).classes('w-full gap-4 hidden')
@@ -989,10 +1297,18 @@ def saved_papers_page():
     i_lock_btn = None
     i_findings_container = None
     i_impact_container = None
+    i_comments_container = None
+    
+    # State for scroll reset
+    last_paper_id = None
+    last_hover_time = 0.0
+    i_scroll_area = None
+
     i_authors_label = None
     default_view = None
     info_view = None
     i_read_source_btn = None
+    i_actions_container = None
 
     def cancel_reset_timer():
         nonlocal reset_timer
@@ -1038,6 +1354,26 @@ def saved_papers_page():
         if info_view:
             info_view.classes(remove='hidden')
 
+        # Scroll Reset Logic
+        nonlocal last_paper_id, last_hover_time
+        current_time = time.time()
+        
+        # Scenario A: New Paper -> Always Reset
+        if paper['id'] != last_paper_id:
+            if i_scroll_area:
+                i_scroll_area.scroll_to(percent=0.0, duration=0)
+            last_paper_id = paper['id']
+            last_hover_time = current_time
+            
+        # Scenario B: Same Paper, but "Long" Absence -> Reset
+        elif (current_time - last_hover_time) > 5.0:
+            if i_scroll_area:
+                i_scroll_area.scroll_to(percent=0.0, duration=0)
+            last_hover_time = current_time
+        else:
+            # Short absence -> maintain scroll, update timestamp
+            last_hover_time = current_time
+
         cat = paper.get('category', 'Unknown')
         if i_category:
             i_category.text = cat
@@ -1052,19 +1388,16 @@ def saved_papers_page():
         if i_score:
             i_score.text = f"{score}/10"
         if i_title:
-            i_title.text = paper['title']
+            # Highlight Logic
+            theme = get_impact_theme(paper)
+            highlights = paper.get('title_highlights') or []
+            processed_title = highlight_title(paper['title'], highlights, theme['highlight_hex'])
+            i_title.content = processed_title
         if i_authors_label:
             authors = paper.get('authors', 'Unknown')
             if isinstance(authors, list):
                 authors = ", ".join(authors)
             i_authors_label.text = authors
-        if i_read_source_btn:
-             url = paper.get('url') or paper.get('link')
-             if url:
-                 i_read_source_btn.props(f'href="{url}" target="_blank"')
-                 i_read_source_btn.classes(remove='hidden')
-             else:
-                 i_read_source_btn.classes(add='hidden')
 
         if i_lock_btn:
             is_pinned = (pinned_paper == paper)
@@ -1087,6 +1420,29 @@ def saved_papers_page():
                 else:
                     ui.markdown(str(imps)).classes('text-sm leading-snug')
 
+        if i_actions_container:
+            i_actions_container.clear()
+            with i_actions_container:
+                 # Comment Button
+                 user = auth.get_current_user()
+                 # Use icon-only button, green (teal-600)
+                 ui.button(icon='forum', on_click=lambda: open_comment_modal(paper, user)) \
+                    .props('flat round color=teal-600').tooltip('Join Conversation')
+                 
+                 # Read Source Button
+                 url = paper.get('url') or paper.get('link')
+                 if url:
+                     ui.button('Read Source', icon='open_in_new') \
+                        .props(f'flat dense color=teal-700 size=sm href="{url}" target="_blank"')
+                
+
+                
+
+                
+ 
+
+
+
     # --- LAYOUT ---
     
     # Right Drawer (Inspector)
@@ -1096,10 +1452,15 @@ def saved_papers_page():
     drawer.on('mouseleave', lambda: start_reset_timer())
 
     with drawer:
-        with ui.row().classes('w-full items-center gap-2'):
-            ui.icon('manage_search').classes('text-base text-slate-400')
-            ui.label('Inspector').classes(
-                'text-sm font-bold text-slate-400 uppercase tracking-wider')
+        with ui.row().classes('w-full items-center justify-between'):
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('manage_search').classes('text-base text-slate-400')
+                ui.label('Inspector').classes(
+                    'text-sm font-bold text-slate-400 uppercase tracking-wider')
+
+            i_lock_btn = ui.button(icon='lock_open').props(
+                'flat round dense color=slate-300').on('click', lambda: toggle_pin(None))
+            ui.tooltip('Click card to Pin/Unpin').classes('bg-slate-800 text-white')
 
         with ui.column().classes('w-full flex-grow relative transition-all overflow-hidden'):
             with ui.column().classes('w-full h-full items-center justify-center text-center') as default_view:
@@ -1117,13 +1478,9 @@ def saved_papers_page():
                     with ui.row().classes('items-center gap-2'):
                         i_score = ui.badge(
                             '0/10', color='teal').props('outline size=md')
-                        i_lock_btn = ui.button(icon='lock_open').props(
-                            'flat round dense color=slate-300').on('click', lambda: toggle_pin(None))
-                        ui.tooltip(
-                            'Click card to Pin/Unpin').classes('bg-slate-800 text-white')
 
-                with ui.scroll_area().classes('w-full p-6 flex-grow'):
-                    i_title = ui.label('Paper Title').classes(
+                with ui.scroll_area().classes('w-full p-6 flex-grow') as i_scroll_area:
+                    i_title = ui.html('Paper Title', sanitize=False).classes(
                         'text-lg font-black text-slate-800 leading-snug mb-6')
                     ui.label('CORE FINDINGS').classes(
                         'text-xs font-bold text-slate-400 uppercase mb-2 tracking-wider')
@@ -1132,15 +1489,17 @@ def saved_papers_page():
                     ui.label('IMPLICATIONS').classes(
                         'text-xs font-bold text-slate-400 uppercase mb-2 tracking-wider')
                     i_impact_container = ui.column().classes('w-full gap-3')
-
-                with ui.row().classes('w-full p-4 bg-slate-50 border-t border-slate-100 mt-auto justify-between items-end'):
+                    
+                    
+                with ui.row().classes('w-full p-4 bg-slate-50 border-t border-slate-100 mt-auto justify-between items-center'):
                     with ui.column().classes('gap-0'):
                         ui.label('AUTHORS').classes(
                             'text-[10px] font-bold text-slate-400 tracking-wider mb-1')
                         i_authors_label = ui.label('Loading...').classes(
                             'text-xs text-slate-600 italic leading-tight')
-                    i_read_source_btn = ui.button('Read Source', icon='open_in_new').props(
-                        'flat dense color=teal-700 size=sm').classes('hidden')
+                    
+                    with ui.row().classes('items-center gap-2') as i_actions_container:
+                        pass
 
     # Main Content
     favorites = database.get_favorites(user['id'])
