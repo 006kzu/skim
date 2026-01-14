@@ -3,7 +3,7 @@ from supabase import create_client, Client, ClientOptions
 from dotenv import load_dotenv
 
 # Load env variables (for local testing)
-load_dotenv()
+load_dotenv(override=True)
 
 url = os.environ.get("SUPABASE_URL")
 key = os.environ.get("SUPABASE_KEY")
@@ -13,6 +13,7 @@ if url and key:
     # Fix for 'Storage endpoint URL should have a trailing slash'
     if not url.endswith("/"):
         url += "/"
+    print(f"DEBUG: Connecting to Supabase Project: {url}")
     supabase: Client = create_client(url, key)
 else:
     supabase = None
@@ -279,24 +280,58 @@ def remove_favorite(user_id, paper_id):
         return False
 
 def get_favorites(user_id):
-    """Fetches all saved papers for a user."""
+    """Fetches all saved papers for a user, including new comment counts."""
     if not supabase:
         return []
     try:
-        # Join with 'papers' table to get details
-        res = supabase.table("saved_papers").select("*, papers(*)").eq("user_id", user_id).execute()
-        # Flatten structure: return list of paper objects
+        # Use the RPC function to get paper details + unread comment counts efficiently
+        # This replaces the join query
+        res = supabase.rpc("get_favorites_with_counts", {"current_user_id": user_id}).execute()
+        
         papers = []
-        for item in res.data:
-            if item.get('papers'):
-                p = item['papers']
-                # Add a flag so frontend knows it's saved
-                p['_is_saved'] = True
-                papers.append(p)
+        for p in res.data:
+            # Add flag
+            p['_is_saved'] = True
+            # Ensure proper type for new_comments_count
+            p['new_comments_count'] = p.get('new_comments_count', 0)
+            papers.append(p)
         return papers
     except Exception as e:
         print(f"Error fetching favorites: {e}")
-        return []
+        # Fallback to old method if RPC fails
+        try:
+             res = supabase.table("saved_papers").select("*, papers(*)").eq("user_id", user_id).execute()
+             papers = []
+             for item in res.data:
+                 if item.get('papers'):
+                     p = item['papers']
+                     p['_is_saved'] = True
+                     papers.append(p)
+             return papers
+        except:
+            return []
+
+def mark_paper_viewed(user_id, paper_id):
+    """Updates the last_viewed_at timestamp for a saved paper."""
+    if not supabase:
+        return
+    try:
+        supabase.table("saved_papers").update({
+            "last_viewed_at": "now()"
+        }).eq("user_id", user_id).eq("paper_id", paper_id).execute()
+    except Exception as e:
+        print(f"Error marking paper as viewed: {e}")
+
+def mark_all_papers_viewed(user_id):
+    """Marks all saved papers as viewed (clears new comment counts)."""
+    if not supabase:
+        return
+    try:
+        supabase.table("saved_papers").update({
+            "last_viewed_at": "now()"
+        }).eq("user_id", user_id).execute()
+    except Exception as e:
+        print(f"Error marking all papers as viewed: {e}")
 
 def is_favorite(user_id, paper_id):
     """Checks if a paper is already saved."""
@@ -310,19 +345,53 @@ def is_favorite(user_id, paper_id):
 
 # --- COMMENTS ---
 
-def get_comments(paper_id):
-    """Fetches comments for a paper, including user profile info."""
+# --- COMMENTS ---
+
+def get_comments(paper_id, user_id=None):
+    """Fetches comments for a paper with vote data."""
     if not supabase:
         return []
     try:
-        # Join with profiles to get username, full_name, avatar_url
-        res = supabase.table("comments").select(
-            "*, profiles(username, full_name, avatar_url)"
-        ).eq("paper_id", paper_id).order("created_at", desc=True).execute()
-        return res.data
+        # Use RPC
+        res = supabase.rpc("get_comments_with_votes", {
+            "p_paper_id": paper_id,
+            "p_user_id": user_id
+        }).execute()
+        
+        # Transform for UI compatibility (nested profile)
+        cleaned = []
+        for row in res.data:
+            row['profiles'] = {
+                'username': row.get('username'),
+                'full_name': row.get('full_name'),
+                'avatar_url': row.get('avatar_url')
+            }
+            cleaned.append(row)
+        return cleaned
     except Exception as e:
         print(f"Error fetching comments: {e}")
         return []
+
+def vote_comment(user_id, comment_id, vote_type):
+    """
+    Casts a vote.
+    vote_type: 1 (up), -1 (down), 0 (remove)
+    """
+    if not supabase: return False
+    try:
+        if vote_type == 0:
+            supabase.table("comment_votes").delete().eq("user_id", user_id).eq("comment_id", comment_id).execute()
+        else:
+            # Upsert
+            supabase.table("comment_votes").upsert({
+                "user_id": user_id,
+                "comment_id": comment_id,
+                "vote_type": vote_type
+            }).execute()
+        return True
+    except Exception as e:
+        print(f"Error voting: {e}")
+        return False
 
 # --- NOTIFICATIONS & REPLIES ---
 

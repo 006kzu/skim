@@ -132,7 +132,7 @@ def logout():
     if supabase:
         supabase.auth.sign_out()
     app.storage.user.clear()
-    ui.navigate.to('/')
+    ui.navigate.reload()
 
 def get_current_user():
     """

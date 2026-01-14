@@ -11,7 +11,7 @@
     - **Type of App**: Select "Web App, Automated App or Bot".
     - **App Info**:
         - **Callback URI / Redirect URL**: Copy this from Supabase (Authentication -> Providers -> Twitter -> Callback URL). usually `http://localhost:8080/auth/callback`.
-        - **Website URL**: `http://localhost:8080`.
+        - **Website URL**: If `http://localhost:8080` is rejected, use `http://127.0.0.1:8080` or your **Supabase Project URL** (e.g., `https://wkddcjtdhdjvuayjzwmb.supabase.co`). This field is just for display/verification.
     - Click **Save**.
 4.  **Get Keys**:
     - Go to **Keys and Tokens** tab.
