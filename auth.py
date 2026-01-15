@@ -33,7 +33,7 @@ def login_with_twitter():
         return
 
     data = supabase.auth.sign_in_with_oauth({
-        "provider": "twitter",
+        "provider": "x",
         "options": {
             "redirect_to": CALLBACK_URL
         }

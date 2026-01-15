@@ -14,6 +14,9 @@ from PIL import Image
 database.init_db()
 app.add_static_files('/assets', 'assets')
 
+from legal_pages import init_legal_pages
+init_legal_pages()
+
 # --- CROPPING DEPENDENCIES ---
 ui.add_head_html('<link href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" rel="stylesheet">', shared=True)
 ui.add_head_html('<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>', shared=True)
@@ -960,7 +963,7 @@ def open_comment_modal(paper, user_obj, on_view=None):
              # Optimistic local update so if we go back to menu, badge might be gone (requires re-render usually)
              paper['new_comments_count'] = 0
              
-             # Trigger callback if provided (e.g., to refresh parent UI)
+
              if on_view:
                  on_view()
 
