@@ -14,10 +14,31 @@ if url and key:
     if not url.endswith("/"):
         url += "/"
     print(f"DEBUG: Connecting to Supabase Project: {url}")
-    supabase: Client = create_client(url, key)
+    _admin_client: Client = create_client(url, key)
 else:
-    supabase = None
+    _admin_client = None
     print("⚠️ WARNING: Supabase keys not found. Database features will fail.")
+
+# Common columns to fetch (Excludes potentially heavy embeddings or raw data)
+PAPER_COLUMNS = "id, title, summary, score, url, link, authors, date_added, topic, key_findings, implications, title_highlights, year, venue"
+
+
+def get_client(access_token=None):
+    """
+    Returns a Supabase client.
+    If access_token is provided, returns a SCOPED client for that user.
+    If no token, returns the ADMIN client (Service Role) - use with caution!
+    """
+    if not _admin_client:
+        return None
+        
+    if access_token:
+        # Create a lightweight client copy with auth headers for this request
+        # This prevents session leakage between users
+        opts = ClientOptions(headers={"Authorization": f"Bearer {access_token}"})
+        return create_client(url, key, options=opts)
+        
+    return _admin_client
 
 
 def init_db():
@@ -28,9 +49,10 @@ def init_db():
     pass
 
 
-def save_paper(paper, search_topic):
+def save_paper(paper, search_topic, access_token=None):
     """Saves a paper to Supabase Cloud."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         print("❌ DB Error: No connection.")
         return
 
@@ -63,7 +85,7 @@ def save_paper(paper, search_topic):
 
     # 5. INSERT
     try:
-        response = supabase.table("papers").insert(data).execute()
+        response = client.table("papers").insert(data).execute()
         print(f"   ✅ DB Saved: {data['title'][:30]}...")
         if response.data and len(response.data) > 0:
             return response.data[0]['id']
@@ -87,14 +109,15 @@ def save_paper(paper, search_topic):
     return None
 
 
-def get_papers_by_topic(topic, limit=20):
+def get_papers_by_topic(topic, limit=20, access_token=None):
     """Fetches papers for a specific topic."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return []
 
     try:
-        response = supabase.table("papers") \
-            .select("*") \
+        response = client.table("papers") \
+            .select(PAPER_COLUMNS) \
             .eq("topic", topic) \
             .order("date_added", desc=True) \
             .limit(limit) \
@@ -105,14 +128,15 @@ def get_papers_by_topic(topic, limit=20):
         return []
 
 
-def get_top_rated_papers(limit=8):
+def get_top_rated_papers(limit=8, access_token=None):
     """Fetches the global top hits (Score >= 7)."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return []
 
     try:
-        response = supabase.table("papers") \
-            .select("*") \
+        response = client.table("papers") \
+            .select(PAPER_COLUMNS) \
             .gte("score", 7) \
             .order("score", desc=True) \
             .limit(limit) \
@@ -139,12 +163,13 @@ def get_all_papers_raw():
         return []
 
 
-def update_paper(paper_id, update_data):
+def update_paper(paper_id, update_data, access_token=None):
     """Updates a specific paper record by its unique ID."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return
     try:
-        response = supabase.table("papers").update(
+        response = client.table("papers").update(
             update_data).eq("id", paper_id).execute()
 
         # 🚨 CHECK: Did we actually update anything?
@@ -159,13 +184,14 @@ def update_paper(paper_id, update_data):
 
 # --- USER & PROFILE FUNCTIONS ---
 
-def get_profile(user_id):
+def get_profile(user_id, access_token=None):
     """Fetches user profile by ID."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return None
     try:
         # manual single check using limit(1) to avoid compat issues
-        res = supabase.table("profiles").select("*").eq("id", user_id).limit(1).execute()
+        res = client.table("profiles").select("*").eq("id", user_id).limit(1).execute()
         if res and res.data and len(res.data) > 0:
             return res.data[0]
         return None
@@ -173,9 +199,10 @@ def get_profile(user_id):
         print(f"Error fetching profile: {e}")
         return None
 
-def create_profile(user_id, metadata, email=None):
+def create_profile(user_id, metadata, email=None, access_token=None):
     """Creates a new profile if one doesn't exist."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return None
     try:
         # metadata is the 'user_metadata' from auth
@@ -191,7 +218,7 @@ def create_profile(user_id, metadata, email=None):
             "email": email,
             "updated_at": "now()"
         }
-        res = supabase.table("profiles").insert(data).execute()
+        res = client.table("profiles").insert(data).execute()
         if res:
              return res.data
         return None
@@ -199,12 +226,13 @@ def create_profile(user_id, metadata, email=None):
         print(f"Error creating profile: {e}")
         return None
 
-def update_profile(user_id, updates):
+def update_profile(user_id, updates, access_token=None):
     """Updates user profile."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return None
     try:
-        res = supabase.table("profiles").update(updates).eq("id", user_id).execute()
+        res = client.table("profiles").update(updates).eq("id", user_id).execute()
         return res.data
     except Exception as e:
         print(f"Error updating profile: {e}")
@@ -212,40 +240,27 @@ def update_profile(user_id, updates):
 
 def upload_avatar(user_id, file_obj, file_ext, access_token=None):
     """Uploads avatar using authenticated client."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return None
     try:
         path = f"{user_id}/avatar.{file_ext}"
         bucket = "avatars"
         
-        # Use a scoped client if token provided (Secure Upload)
-        client_to_use = supabase
-        if access_token:
-            # Fix URL again locally just in case
-            safe_url = url
-            if not safe_url.endswith("/"):
-                safe_url += "/"
-                
-            # Create a lightweight client copy with auth headers
-            opts = ClientOptions(headers={"Authorization": f"Bearer {access_token}"})
-            client_to_use = create_client(safe_url, key, options=opts)
-
         # 1. Upload
-        res = client_to_use.storage.from_(bucket).upload(path, file_obj, {"upsert": "true", "content-type": f"image/{file_ext}"})
+        res = client.storage.from_(bucket).upload(path, file_obj, {"upsert": "true", "content-type": f"image/{file_ext}"})
         
         # 2. Get Public URL
-        public_url = supabase.storage.from_(bucket).get_public_url(path)
+        # Public URL generation doesn't require auth usually, but we use the client instance
+        public_url = client.storage.from_(bucket).get_public_url(path)
         
         # Add cache buster
         import time
         final_url = f"{public_url}?t={int(time.time())}"
 
         # 3. Update Profile
-        if access_token:
-             # Use scoped client for update too
-             client_to_use.table("profiles").update({"avatar_url": final_url}).eq("id", user_id).execute()
-        else:
-             update_profile(user_id, {"avatar_url": final_url})
+        # The client is already scoped if token was passed
+        client.table("profiles").update({"avatar_url": final_url}).eq("id", user_id).execute()
         
         return final_url
     except Exception as e:
@@ -254,12 +269,13 @@ def upload_avatar(user_id, file_obj, file_ext, access_token=None):
 
 # --- SAVED PAPERS (FAVORITES) ---
 
-def save_favorite(user_id, paper_id):
+def save_favorite(user_id, paper_id, access_token=None):
     """Saves a paper to the user's library."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return False
     try:
-        supabase.table("saved_papers").insert({
+        client.table("saved_papers").insert({
             "user_id": user_id,
             "paper_id": paper_id
         }).execute()
@@ -268,25 +284,27 @@ def save_favorite(user_id, paper_id):
         print(f"Error saving favorite: {e}")
         return False
 
-def remove_favorite(user_id, paper_id):
+def remove_favorite(user_id, paper_id, access_token=None):
     """Removes a paper from the user's library."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return False
     try:
-        supabase.table("saved_papers").delete().eq("user_id", user_id).eq("paper_id", paper_id).execute()
+        client.table("saved_papers").delete().eq("user_id", user_id).eq("paper_id", paper_id).execute()
         return True
     except Exception as e:
         print(f"Error removing favorite: {e}")
         return False
 
-def get_favorites(user_id):
+def get_favorites(user_id, access_token=None):
     """Fetches all saved papers for a user, including new comment counts."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return []
     try:
         # Use the RPC function to get paper details + unread comment counts efficiently
         # This replaces the join query
-        res = supabase.rpc("get_favorites_with_counts", {"current_user_id": user_id}).execute()
+        res = client.rpc("get_favorites_with_counts", {"current_user_id": user_id}).execute()
         
         papers = []
         for p in res.data:
@@ -300,7 +318,7 @@ def get_favorites(user_id):
         print(f"Error fetching favorites: {e}")
         # Fallback to old method if RPC fails
         try:
-             res = supabase.table("saved_papers").select("*, papers(*)").eq("user_id", user_id).execute()
+             res = client.table("saved_papers").select(f"*, papers({PAPER_COLUMNS})").eq("user_id", user_id).execute()
              papers = []
              for item in res.data:
                  if item.get('papers'):
@@ -311,34 +329,37 @@ def get_favorites(user_id):
         except:
             return []
 
-def mark_paper_viewed(user_id, paper_id):
+def mark_paper_viewed(user_id, paper_id, access_token=None):
     """Updates the last_viewed_at timestamp for a saved paper."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return
     try:
-        supabase.table("saved_papers").update({
+        client.table("saved_papers").update({
             "last_viewed_at": "now()"
         }).eq("user_id", user_id).eq("paper_id", paper_id).execute()
     except Exception as e:
         print(f"Error marking paper as viewed: {e}")
 
-def mark_all_papers_viewed(user_id):
+def mark_all_papers_viewed(user_id, access_token=None):
     """Marks all saved papers as viewed (clears new comment counts)."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return
     try:
-        supabase.table("saved_papers").update({
+        client.table("saved_papers").update({
             "last_viewed_at": "now()"
         }).eq("user_id", user_id).execute()
     except Exception as e:
         print(f"Error marking all papers as viewed: {e}")
 
-def is_favorite(user_id, paper_id):
+def is_favorite(user_id, paper_id, access_token=None):
     """Checks if a paper is already saved."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return False
     try:
-        res = supabase.table("saved_papers").select("id").eq("user_id", user_id).eq("paper_id", paper_id).execute()
+        res = client.table("saved_papers").select("id").eq("user_id", user_id).eq("paper_id", paper_id).execute()
         return len(res.data) > 0
     except Exception as e:
         return False
@@ -347,13 +368,14 @@ def is_favorite(user_id, paper_id):
 
 # --- COMMENTS ---
 
-def get_comments(paper_id, user_id=None):
+def get_comments(paper_id, user_id=None, access_token=None):
     """Fetches comments for a paper with vote data."""
-    if not supabase:
+    client = get_client(access_token)
+    if not client:
         return []
     try:
         # Use RPC
-        res = supabase.rpc("get_comments_with_votes", {
+        res = client.rpc("get_comments_with_votes", {
             "p_paper_id": paper_id,
             "p_user_id": user_id
         }).execute()
@@ -372,18 +394,19 @@ def get_comments(paper_id, user_id=None):
         print(f"Error fetching comments: {e}")
         return []
 
-def vote_comment(user_id, comment_id, vote_type):
+def vote_comment(user_id, comment_id, vote_type, access_token=None):
     """
     Casts a vote.
     vote_type: 1 (up), -1 (down), 0 (remove)
     """
-    if not supabase: return False
+    client = get_client(access_token)
+    if not client: return False
     try:
         if vote_type == 0:
-            supabase.table("comment_votes").delete().eq("user_id", user_id).eq("comment_id", comment_id).execute()
+            client.table("comment_votes").delete().eq("user_id", user_id).eq("comment_id", comment_id).execute()
         else:
             # Upsert
-            supabase.table("comment_votes").upsert({
+            client.table("comment_votes").upsert({
                 "user_id": user_id,
                 "comment_id": comment_id,
                 "vote_type": vote_type
@@ -395,46 +418,50 @@ def vote_comment(user_id, comment_id, vote_type):
 
 # --- NOTIFICATIONS & REPLIES ---
 
-def get_notifications(user_id):
-    if not supabase: return []
+def get_notifications(user_id, access_token=None):
+    client = get_client(access_token)
+    if not client: return []
     try:
-        # Fetch notifications with the actor's profile
-        res = supabase.table("notifications").select(
-            "*, actor:profiles!actor_id(username, avatar_url), resource:comments(content, paper_id)"
+        # Fetch notifications with the actor's profile AND the paper topic via the comment
+        res = client.table("notifications").select(
+            "*, actor:profiles!actor_id(username, avatar_url), resource:comments(content, paper_id, paper:papers(topic))"
         ).eq("user_id", user_id).order("created_at", desc=True).limit(20).execute()
         return res.data
     except Exception as e:
         print(f"Error fetching notifications: {e}")
         return []
 
-def mark_notification_read(notif_id):
-    if not supabase: return False
+def mark_notification_read(notif_id, access_token=None):
+    client = get_client(access_token)
+    if not client: return False
     try:
-        supabase.table("notifications").update({"is_read": True}).eq("id", notif_id).execute()
+        client.table("notifications").update({"is_read": True}).eq("id", notif_id).execute()
         return True
     except Exception as e:
         print(f"Error marking notification read: {e}")
         return False
 
-def mark_all_notifications_read(user_id):
-    if not supabase: return False
+def mark_all_notifications_read(user_id, access_token=None):
+    client = get_client(access_token)
+    if not client: return False
     try:
-        supabase.table("notifications").update({"is_read": True}).eq("user_id", user_id).eq("is_read", False).execute()
+        client.table("notifications").update({"is_read": True}).eq("user_id", user_id).eq("is_read", False).execute()
         return True
     except Exception as e:
         print(f"Error marking all notifications read: {e}")
         return False
 
-def create_notification(recipient_id, actor_id, resource_id):
+def create_notification(recipient_id, actor_id, resource_id, access_token=None):
     """
     Creates a notification for a user.
     """
-    if not supabase: return
+    client = get_client(access_token)
+    if not client: return
     if recipient_id == actor_id: return # Don't notify self
     
     try:
         # Use RPC to bypass RLS
-        supabase.rpc("create_notification_safe", {
+        client.rpc("create_notification_safe", {
             "recipient_id": recipient_id,
             "sender_id": actor_id,
             "comment_id": resource_id
@@ -442,8 +469,9 @@ def create_notification(recipient_id, actor_id, resource_id):
     except Exception as e:
         print(f"Error creating notification: {e}")
 
-def add_comment(user_id, paper_id, content, parent_id=None):
-    if not supabase:
+def add_comment(user_id, paper_id, content, parent_id=None, access_token=None):
+    client = get_client(access_token)
+    if not client:
         return None
     try:
         data = {
@@ -454,7 +482,7 @@ def add_comment(user_id, paper_id, content, parent_id=None):
         if parent_id:
             data["parent_id"] = parent_id
             
-        res = supabase.table("comments").insert(data).execute()
+        res = client.table("comments").insert(data).execute()
         
         # logical next step: Check if reply, trigger notification
         if res.data and len(res.data) > 0:
@@ -463,14 +491,33 @@ def add_comment(user_id, paper_id, content, parent_id=None):
             
             if parent_id:
                 # 1. Fetch parent comment to get the original author
-                parent_res = supabase.table("comments").select("user_id").eq("id", parent_id).single().execute()
+                parent_res = client.table("comments").select("user_id").eq("id", parent_id).single().execute()
                 if parent_res.data:
                     parent_author_id = parent_res.data['user_id']
                     # 2. Create Notification
-                    create_notification(parent_author_id, user_id, new_comment_id)
+                    # We pass the same token to create_notification
+                    create_notification(parent_author_id, user_id, new_comment_id, access_token=access_token)
             
             return new_comment
         return None
     except Exception as e:
         print(f"Error adding comment: {e}")
+        return None
+
+def get_paper_by_id(pid, user_id=None, access_token=None):
+    """Fetches a single paper by ID, optionally checking if saved by user."""
+    client = get_client(access_token)
+    if not client: return None
+    try:
+        res = client.table("papers").select("*").eq("id", pid).execute()
+        if res.data:
+            paper = res.data[0]
+            if user_id:
+                saved = is_favorite(user_id, pid, access_token)
+                if saved:
+                    paper['_is_saved'] = True
+            return paper
+        return None
+    except Exception as e:
+        print(f"Error fetching paper {pid}: {e}")
         return None

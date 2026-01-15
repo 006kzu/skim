@@ -1,5 +1,5 @@
 from nicegui import app, ui
-from database import supabase
+from database import get_client
 import database
 
 import os
@@ -10,14 +10,19 @@ CALLBACK_URL = f"{os.environ.get('SITE_URL', 'http://localhost:8080')}/auth/call
 
 def login_with_google():
     """Initiates the Google OAuth flow."""
-    if not supabase:
+    # Use global client for initiating auth
+    client = get_client()
+    if not client:
         ui.notify("Database connection missing!", type='negative')
         return
 
-    data = supabase.auth.sign_in_with_oauth({
+    data = client.auth.sign_in_with_oauth({
         "provider": "google",
         "options": {
-            "redirect_to": CALLBACK_URL
+            "redirect_to": CALLBACK_URL,
+            "queryParams": {
+                "prompt": "select_account"
+            }
         }
     })
     
@@ -28,11 +33,12 @@ def login_with_google():
 
 def login_with_twitter():
     """Initiates the Twitter OAuth flow."""
-    if not supabase:
+    client = get_client()
+    if not client:
         ui.notify("Database connection missing!", type='negative')
         return
 
-    data = supabase.auth.sign_in_with_oauth({
+    data = client.auth.sign_in_with_oauth({
         "provider": "x",
         "options": {
             "redirect_to": CALLBACK_URL
@@ -46,11 +52,12 @@ def login_with_twitter():
 
 def sign_up_with_email(email, password, full_name, username):
     """Signs up a new user with email and password."""
-    if not supabase:
+    client = get_client()
+    if not client:
         return None, "Database error"
     try:
         print(f"DEBUG: Signing up with redirect_to: {CALLBACK_URL}")
-        res = supabase.auth.sign_up({
+        res = client.auth.sign_up({
             "email": email,
             "password": password,
             "options": {
@@ -72,16 +79,17 @@ def sign_up_with_email(email, password, full_name, username):
             }
             # Ensure profile exists and is up to date
             try:
-                profile = database.get_profile(res.user.id)
+                token = res.session.access_token
+                profile = database.get_profile(res.user.id, access_token=token)
                 if not profile:
-                   database.create_profile(res.user.id, res.user.user_metadata, email=res.user.email)
+                   database.create_profile(res.user.id, res.user.user_metadata, email=res.user.email, access_token=token)
                 else:
                    # Sync username if it's missing or different (Trigger might not have caught it)
                    database.update_profile(res.user.id, {
                        "username": res.user.user_metadata.get('username'),
                        "full_name": res.user.user_metadata.get('full_name'),
                        "email": res.user.email
-                   })
+                   }, access_token=token)
                    print(f"DEBUG: Synced profile for {res.user.email}")
             except Exception as e:
                 print(f"DEBUG: Profile sync failed: {e}")
@@ -97,10 +105,11 @@ def sign_up_with_email(email, password, full_name, username):
 
 def sign_in_with_email(email, password):
     """Signs in a user with email and password."""
-    if not supabase:
+    client = get_client()
+    if not client:
         return None, "Database error"
     try:
-        res = supabase.auth.sign_in_with_password({
+        res = client.auth.sign_in_with_password({
             "email": email,
             "password": password
         })
@@ -114,9 +123,10 @@ def sign_in_with_email(email, password):
             }
             # Ensure profile check happens here too
             try:
-                profile = database.get_profile(res.user.id)
+                token = res.session.access_token
+                profile = database.get_profile(res.user.id, access_token=token)
                 if not profile:
-                   database.create_profile(res.user.id, res.user.user_metadata, email=res.user.email)
+                   database.create_profile(res.user.id, res.user.user_metadata, email=res.user.email, access_token=token)
                 elif profile.get('avatar_url'):
                    app.storage.user['user']['avatar_url'] = profile.get('avatar_url')
             except:
@@ -128,11 +138,15 @@ def sign_in_with_email(email, password):
         return None, str(e)
 
 def logout():
-    """Logs the user out."""
-    if supabase:
-        supabase.auth.sign_out()
-    app.storage.user.clear()
-    ui.navigate.reload()
+    """Logs out the current user."""
+    client = get_client()
+    if client:
+        try:
+             client.auth.sign_out()
+        except:
+             pass
+    app.storage.user.clear() # Clear all session data including referrer_path
+    ui.navigate.to('/')
 
 def get_current_user():
     """
@@ -154,12 +168,13 @@ def handle_auth_callback(code: str):
     Exchanges the auth code for a session.
     Expected to be called on the /auth/callback page.
     """
-    if not supabase:
+    client = get_client()
+    if not client:
         return False
 
     try:
         # Exchange code for session
-        res = supabase.auth.exchange_code_for_session({
+        res = client.auth.exchange_code_for_session({
             "auth_code": code
         })
         user = res.user
@@ -175,14 +190,15 @@ def handle_auth_callback(code: str):
         # Ensure profile exists (in case trigger failed or missing)
         # Ensure profile exists (in case trigger failed or missing)
         try:
-            profile = database.get_profile(user.id)
+            token = res.session.access_token
+            profile = database.get_profile(user.id, access_token=token)
             # Try to grab X handle if available (usually 'user_name' in metadata for Twitter)
-            x_handle = user.user_metadata.get('user_name') if user.app_metadata.get('provider') == 'twitter' else None
+            x_handle = user.user_metadata.get('user_name') if user.app_metadata.get('provider') in ('twitter', 'x') else None
             
             if not profile:
-                database.create_profile(user.id, user.user_metadata, email=user.email)
+                database.create_profile(user.id, user.user_metadata, email=user.email, access_token=token)
                 if x_handle:
-                     database.update_profile(user.id, {'x_handle': x_handle})
+                     database.update_profile(user.id, {'x_handle': x_handle}, access_token=token)
             else:
                  # Update session with DB avatar
                  if profile.get('avatar_url'):
@@ -190,7 +206,7 @@ def handle_auth_callback(code: str):
                    
                  if x_handle and not profile.get('x_handle'):
                      # Link X handle if not already set
-                     database.update_profile(user.id, {'x_handle': x_handle})
+                     database.update_profile(user.id, {'x_handle': x_handle}, access_token=token)
 
         except Exception as e:
             print(f"Profile check failed: {e}")

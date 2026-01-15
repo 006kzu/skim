@@ -1,4 +1,5 @@
 from nicegui import ui, run, app
+from fastapi import Request
 import scholar_api
 import database
 import topics
@@ -8,6 +9,7 @@ import auth
 import base64
 import io
 import time
+import html
 from PIL import Image
 
 # --- INITIALIZATION ---
@@ -16,6 +18,10 @@ app.add_static_files('/assets', 'assets')
 
 from legal_pages import init_legal_pages
 init_legal_pages()
+
+def get_user_token():
+    """Helper to retrieve access token from current session."""
+    return app.storage.user.get('user', {}).get('access_token')
 
 # --- CROPPING DEPENDENCIES ---
 ui.add_head_html('<link href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" rel="stylesheet">', shared=True)
@@ -127,24 +133,37 @@ def get_impact_theme(paper):
 def highlight_title(title, keywords, highlight_hex):
     if not title:
         return "Untitled Paper"
+    
+    # 1. Sanitize the full title first (Prevent XSS)
+    safe_title = html.escape(title)
+        
     if not keywords or not isinstance(keywords, list):
-        return title
+        return safe_title
 
     try:
         clean_keywords = [
             k for k in keywords if k and isinstance(k, str) and len(k) > 2]
         sorted_keywords = sorted(clean_keywords, key=len, reverse=True)
 
-        processed_title = title
+        processed_title = safe_title
         for kw in sorted_keywords:
-            pattern = re.compile(re.escape(kw), re.IGNORECASE)
+            # We also escape the keyword to match the escaped title content safely
+            safe_kw = html.escape(kw)
+            
+            # Use regex to replace case-insensitive matches
+            # We must be careful not to double-escape or break HTML tags we just added.
+            # Since we iterate, it's safer to only match text that hasn't been wrapped yet, 
+            # but for simple highlighting, replacing the safe text with wrapped safe text is usually fine 
+            # as long as keywords don't overlap with HTML tag syntax like 'span' or 'style'.
+            
+            pattern = re.compile(re.escape(safe_kw), re.IGNORECASE)
             processed_title = pattern.sub(
-                f'<span style="color: {highlight_hex}; font-weight: 900;">{kw}</span>', processed_title)
+                f'<span style="color: {highlight_hex}; font-weight: 900;">{safe_kw}</span>', processed_title)
 
         return processed_title
     except Exception as e:
         print(f"Error highlighting title: {e}")
-        return title
+        return html.escape(title)
 
 # --- UI COMPONENTS ---
 
@@ -196,13 +215,14 @@ def display_arxiv_card(container, paper):
                         # 2. Toggle Favorite
                         # We need to check state. We can store it on the button object?
                         # Or check DB.
-                        is_saved = database.is_favorite(u['id'], pid)
+                        is_saved = database.is_favorite(u['id'], pid, access_token=get_user_token())
                         if is_saved:
-                            database.remove_favorite(u['id'], pid)
+                            database.remove_favorite(u['id'], pid, access_token=get_user_token())
                             b.props('icon=favorite_border color=grey')
                             ui.notify('Removed from library.')
                         else:
-                            database.save_favorite(u['id'], pid)
+                            # Note: save_favorite implies connection
+                            database.save_favorite(u['id'], pid, access_token=get_user_token())
                             b.props('icon=favorite color=red')
                             ui.notify('Saved to library!')
                     
@@ -237,20 +257,19 @@ def display_arxiv_card(container, paper):
             ai_result_area.move(container)
 
 
-def display_curated_card(container, paper, on_hover=None, on_leave=None, on_click=None, on_unfavorite=None):
+def display_curated_card(container, paper, on_hover=None, on_leave=None, on_click=None, on_unfavorite=None, user=None):
     theme = get_impact_theme(paper)
 
     with container:
-        card = ui.card().classes(
-            f"w-full min-h-[320px] border-l-4 shadow-sm hover:shadow-md hover:z-50 transition-all duration-300 cursor-pointer flex flex-col gap-6 group relative overflow-visible {theme['card_bg']}")
+        with ui.card().classes(
+            f"w-full min-h-[320px] border-l-4 shadow-sm hover:shadow-md hover:z-50 transition-all duration-300 cursor-pointer flex flex-col gap-6 group relative overflow-visible {theme['card_bg']}") as card:
 
-        border_color = 'border-slate-400' if theme['is_high_impact'] else 'border-slate-300'
-        card.classes(add=border_color)
+            border_color = 'border-slate-400' if theme['is_high_impact'] else 'border-slate-300'
+            card.classes(add=border_color)
 
-        if on_click:
-            card.on('click', lambda: on_click(paper))
+            if on_click:
+                card.on('click', lambda: on_click(paper))
 
-        with card:
             with ui.column().classes('absolute -top-14 right-0 z-50 hidden animate-bounce items-end overflow-visible gap-0') as popup_hint_container:
                 ui.label('Hint: Click card to lock in inspector').classes(
                     'bg-slate-800 text-white text-[10px] font-bold px-3 py-2 rounded-lg shadow-xl border border-slate-600 whitespace-nowrap relative z-10')
@@ -266,9 +285,12 @@ def display_curated_card(container, paper, on_hover=None, on_leave=None, on_clic
                     ui.label(category).classes(
                         f"text-[10px] font-black uppercase tracking-wide text-center leading-tight max-w-[100px] {theme['accent_color']}")
 
+            # --- VISUAL SCORE INDICATOR (Top Right) ---
+            with ui.column().classes('absolute top-4 right-4 items-center z-10'):
+                # Try to load custom score image
                 score_val = paper.get('score')
                 score_img_path = None
-
+                
                 if score_val is not None:
                     raw_str = str(score_val)
                     match = re.search(r'\d+', raw_str)
@@ -289,7 +311,8 @@ def display_curated_card(container, paper, on_hover=None, on_leave=None, on_clic
                         f"text-6xl font-black {theme['score_color']}")
 
             # --- FAVORITE BUTTON (Absolute Top Right) ---
-            user = auth.get_current_user()
+            if user is None:
+                user = auth.get_current_user()
             fav_icon = 'favorite_border'
             fav_color = 'slate-400'
             
@@ -313,27 +336,31 @@ def display_curated_card(container, paper, on_hover=None, on_leave=None, on_clic
                 if not u:
                     ui.notify('Please login to save papers.', type='warning')
                     return
-                
-                pid = paper.get('id')
-                if not pid:
-                     # Should exist for curated, but safe check
-                    pid = database.save_paper(paper, 'curated')
-                    paper['id'] = pid
-                
-                is_saved = database.is_favorite(u['id'], pid)
-                if is_saved:
-                    database.remove_favorite(u['id'], pid)
-                    fav_btn.props('icon=favorite_border')
-                    fav_btn.classes(remove='text-red-500', add='text-slate-400')
-                    ui.notify('Removed from library.')
-                    if on_unfavorite:
-                        on_unfavorite(paper)
-                else:
-                    database.save_favorite(u['id'], pid)
-                    fav_btn.props('icon=favorite')
-                    fav_btn.classes(remove='text-slate-400', add='text-red-500')
-                    ui.notify('Saved to library!')
-
+                if u:
+                    pid = paper.get('id')
+                    if not pid:
+                        # Should have been saved by now if we are here?
+                        # Actually for curated, it might happen.
+                        pid = database.save_paper(paper, 'curated', access_token=get_user_token())
+                        
+                    is_saved = database.is_favorite(u['id'], pid, access_token=get_user_token())
+                    if is_saved:
+                        database.remove_favorite(u['id'], pid, access_token=get_user_token())
+                        fav_btn.props('icon=favorite_border')
+                        fav_btn.classes(remove='text-red-500', add='text-slate-400')
+                        ui.notify('Removed from library.')
+                        if on_unfavorite:
+                            on_unfavorite(paper)
+                    else:
+                        if not pid:
+                                # Try saving again if missing?
+                                pid = database.save_paper(paper, 'curated', access_token=get_user_token())
+                        
+                        database.save_favorite(u['id'], pid, access_token=get_user_token())
+                        fav_btn.props('icon=favorite')
+                        fav_btn.classes(remove='text-slate-400', add='text-red-500')
+                        ui.notify('Saved to library!')
+            
             fav_btn.on('click.stop', on_fav_click_curated)
 
             with ui.column().classes('w-full gap-3'):
@@ -353,19 +380,40 @@ def display_curated_card(container, paper, on_hover=None, on_leave=None, on_clic
                      ui.button('Read Source', icon='open_in_new').props(
                         'flat dense no-caps color=slate-400 size=xs').classes('self-start -ml-2 hover:bg-slate-100 rounded opacity-60 hover:opacity-100 transition-opacity').on('click.stop', lambda: ui.navigate.to(url, new_tab=True))
 
-        if on_hover:
-            def handle_hover_logic():
-                if not app.storage.user.get('has_seen_lock_hint_v2', False):
-                    popup_hint_container.classes(remove='hidden')
-                    app.storage.user['has_seen_lock_hint_v2'] = True
-                    ui.timer(4.0, lambda: popup_hint_container.classes(
-                        add='hidden'), once=True)
-                if on_hover:
-                    on_hover(paper)
-            card.on('mouseenter', handle_hover_logic)
+            if on_hover:
+                hover_timer = None
+                
+                def handle_hover_logic():
+                    nonlocal hover_timer
+                    # Cancel any existing timer
+                    if hover_timer:
+                        hover_timer.cancel()
+                        
+                    # Start new timer (Debounce/Intent Delay)
+                    # 150ms delay to ensure user intends to hover
+                    def trigger_hover():
+                        if not app.storage.user.get('has_seen_lock_hint_v2', False):
+                            popup_hint_container.classes(remove='hidden')
+                            app.storage.user['has_seen_lock_hint_v2'] = True
+                            ui.timer(4.0, lambda: popup_hint_container.classes(
+                                add='hidden'), once=True)
+                        if on_hover:
+                            on_hover(paper)
+                            
+                    hover_timer = ui.timer(0.075, trigger_hover, once=True)
 
-        if on_leave:
-            card.on('mouseleave', on_leave)
+                def handle_leave_logic():
+                    nonlocal hover_timer
+                    if hover_timer:
+                        hover_timer.cancel()
+                        hover_timer = None
+                    if on_leave:
+                        on_leave()
+
+                card.on('mouseenter', handle_hover_logic)
+                card.on('mouseleave', handle_leave_logic)
+            elif on_leave:
+                card.on('mouseleave', on_leave)
 
 
 def header(on_topic_click=None, on_home_click=None, on_search=None, current_path=None):
@@ -398,46 +446,85 @@ def header(on_topic_click=None, on_home_click=None, on_search=None, current_path
                 # --- Notification Bell ---
                 user = auth.get_current_user()
                 if user:
-                    # Fetch only recent ones for header
-                    notifs = database.get_notifications(user['id'])
-                    unread_count = len([n for n in notifs if not n.get('is_read')])
+                    notif_badge = None
+                    n_menu = None
+
+                    async def update_notifications():
+                        nonlocal notif_badge, n_menu
+                        if not user: return
+                        
+                        notifs = await run.io_bound(database.get_notifications, user['id'], access_token=get_user_token())
+                        unread_count = len([n for n in notifs if not n.get('is_read')])
+                        
+                        if notif_badge:
+                            if unread_count > 0:
+                                notif_badge.set_text(str(unread_count))
+                                notif_badge.set_visibility(True)
+                            else:
+                                notif_badge.set_visibility(False)
+                        
+                        if n_menu:
+                            n_menu.clear()
+                            with n_menu:
+                                with ui.column().classes('p-2 gap-1 w-80'):
+                                    with ui.row().classes('w-full justify-between items-center mb-2'):
+                                        ui.label('Notifications').classes('text-sm font-bold text-slate-700')
+                                        if any(not n['is_read'] for n in notifs):
+                                            async def mark_all():
+                                                await run.io_bound(database.mark_all_notifications_read, user['id'], access_token=get_user_token())
+                                                if notif_badge: notif_badge.set_visibility(False)
+                                                await update_notifications()
+                                            ui.button('Mark all read', on_click=mark_all).props('flat dense size=xs color=teal')
+
+                                    if not notifs:
+                                        ui.label('No new notifications.').classes('text-xs text-slate-500 italic p-2')
+                                    
+                                    with ui.scroll_area().classes('max-h-60 w-full'):
+                                        for n in notifs:
+                                            actor = n.get('actor') or {}
+                                            resource = n.get('resource') or {}
+                                            bg_class = 'bg-slate-50' if not n.get('is_read') else 'bg-white'
+                                            
+                                            async def on_n_click(n_id=n['id'], p_id=resource.get('paper_id'), p_topic=resource.get('paper', {}).get('topic')):
+                                                await run.io_bound(database.mark_notification_read, n_id, access_token=get_user_token())
+                                                
+                                                if p_id:
+                                                    # Navigate to paper and open comments
+                                                    # IMPORTANT: Do this BEFORE update_notifications, as that clears the menu 
+                                                    # and destroys this button, causing a "slot deleted" error during navigation.
+                                                    if p_topic:
+                                                        ui.navigate.to(f'/topic/{p_topic}?open_comments={p_id}')
+                                                    else:
+                                                        ui.navigate.to(f'/saved?open_comments={p_id}')
+                                                else:
+                                                    # Only update UI if we are staying here
+                                                    await update_notifications()
+
+                                            with ui.item(on_click=on_n_click).classes(f'w-full p-3 border-b border-slate-50 {bg_class} transition-colors cursor-pointer'):
+                                                with ui.row().classes('items-start gap-3 no-wrap w-full'):
+                                                    # Avatar
+                                                    ava = actor.get('avatar_url')
+                                                    if ava:
+                                                        ui.image(ava).classes('w-8 h-8 rounded-full object-cover min-w-[2rem]')
+                                                    else:
+                                                        ui.icon('account_circle').classes('text-2xl text-slate-300')
+                                                    
+                                                    with ui.column().classes('gap-0 flex-grow'):
+                                                        name = actor.get('username') or 'Someone'
+                                                        ui.label(f"{name} replied").classes('text-xs font-bold text-slate-700')
+                                                        ui.label(resource.get('content', '')[:50] + '...').classes('text-[10px] text-slate-500 leading-tight break-all')
+                                                        ui.label(n.get('created_at', '')[:10]).classes('text-[9px] text-slate-400 mt-1')
+                    
+                    
                     
                     with ui.button(icon='notifications').props('flat round dense color=slate-600').classes('relative'):
-                        badge = None
-                        if unread_count > 0:
-                            badge = ui.badge(unread_count, color='red').props('floating rounded align=top')
-                        
-                        async def mark_seen():
-                            if unread_count > 0:
-                                await run.io_bound(database.mark_all_notifications_read, user['id'])
-                                if badge: badge.set_visibility(False)
-                        
-                        with ui.menu().classes('bg-white border border-slate-200 shadow-xl rounded-xl w-80 p-0 z-[9999]').props('auto-close fit anchor="bottom right" self="top right" offset=[0, 10]').on('show', mark_seen):
-                            with ui.column().classes('w-full gap-0'):
-                                 ui.label('Notifications').classes('p-4 font-bold text-slate-700 border-b border-slate-100')
-                                 
-                                 if not notifs:
-                                      ui.label('No notifications').classes('p-4 text-sm text-slate-400 italic')
-                                 
-                                 with ui.scroll_area().classes('max-h-60 w-full'):
-                                     for n in notifs:
-                                         actor = n.get('actor') or {}
-                                         resource = n.get('resource') or {}
-                                         bg_class = 'bg-slate-50' if not n.get('is_read') else 'bg-white'
-                                         
-                                         with ui.item().classes(f'w-full p-3 border-b border-slate-50 {bg_class} transition-colors'):
-                                             with ui.row().classes('items-start gap-3 no-wrap w-full'):
-                                                 # Avatar
-                                                 ava = actor.get('avatar_url')
-                                                 if ava:
-                                                     ui.image(ava).classes('w-8 h-8 rounded-full object-cover min-w-[2rem]')
-                                                 else:
-                                                     ui.icon('account_circle').classes('text-2xl text-slate-300')
-                                                 
-                                                 with ui.column().classes('gap-0 flex-grow'):
-                                                      name = actor.get('username') or 'Someone'
-                                                      ui.label(f"{name} replied").classes('text-xs font-bold text-slate-700')
-                                                      ui.label(resource.get('content', '')[:50] + '...').classes('text-[10px] text-slate-500 leading-tight break-all')
+                        notif_badge = ui.badge(0, color='red').props('floating rounded align=top')
+                        notif_badge.set_visibility(False)
+                        n_menu = ui.menu().classes('bg-white border border-slate-200 shadow-xl rounded-xl w-80 p-0 z-[9999]').props('auto-close fit anchor="bottom right" self="top right" offset=[0, 10]').on('show', update_notifications)
+                    
+                    ui.timer(1.0, update_notifications, once=True) # Initial load
+                    ui.timer(30.0, update_notifications) # Refresh every 30 seconds
+
                 hub_btn = ui.button('Research Hub', icon='apps').props('flat no-caps color=slate-800 size=md icon-right=arrow_drop_down').classes(
                     'font-bold tracking-tight bg-slate-100 hover:bg-slate-200 rounded-lg px-3')
 
@@ -496,7 +583,7 @@ def header(on_topic_click=None, on_home_click=None, on_search=None, current_path
                 user = auth.get_current_user()
                 if user:
                     # but DB is most accurate. Let's rely on DB for now since we have it.
-                    profile = database.get_profile(user['id']) or {}
+                    profile = database.get_profile(user['id'], access_token=get_user_token()) or {}
                     username_text = profile.get('username')
                     
                     # Force Username Creation if logged in but no username (e.g. fresh Google Auth)
@@ -512,10 +599,9 @@ def header(on_topic_click=None, on_home_click=None, on_search=None, current_path
                                     ui.notify('Username must be at least 3 characters.', type='negative')
                                     return
                                 
-                                # Check uniqueness handled by DB constraint usually, but we catch error
-                                database.update_profile(user['id'], {'username': u_input.value})
+                                database.update_profile(user['id'], {'username': u_input.value}, access_token=get_user_token())
                                 # We check if it stuck
-                                p_check = database.get_profile(user['id'])
+                                p_check = database.get_profile(user['id'], access_token=get_user_token())
                                 if p_check and p_check.get('username') == u_input.value:
                                      ui.notify(f'Welcome, {u_input.value}!', type='positive')
                                      username_dialog.close()
@@ -608,8 +694,8 @@ def header(on_topic_click=None, on_home_click=None, on_search=None, current_path
 # --- ROOT DASHBOARD (CAROUSEL + IMPACT GUIDE) ---
 @ui.page('/')
 def dashboard():
-    # Set return path for login - REMOVED to prevent stale redirects
-    # app.storage.user['referrer_path'] = '/' (Handled by header button now)
+    # Set return path for login
+    app.storage.user['referrer_path'] = '/'
 
     ui.add_head_html('''
         <style>
@@ -618,9 +704,13 @@ def dashboard():
     ''')
 
     recent_papers = []
-    if database.supabase:
+    # This search logic seems to be generic, so we can use the default client (Admin/Service)
+    # or arguably we should use a public anon client if we had one.
+    # Current behavior is to use Admin client which is fine for reading public papers.
+    client = database.get_client()
+    if client:
         try:
-            res = database.supabase.table("papers").select(
+            res = client.table("papers").select(
                 "*").order("date_added", desc=True).limit(8).execute()
             recent_papers = res.data
         except Exception as e:
@@ -801,7 +891,14 @@ def build_comment_tree(comments):
             comment_map[pid]['replies'].append(c)
         else:
             roots.append(c)
-    roots.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+            
+    # Sort Replies: Chronological (Oldest first/Top -> Newest last/Bottom)
+    for c in comments:
+        if c['replies']:
+            c['replies'].sort(key=lambda x: x.get('created_at', ''))
+
+    # Sort Roots: Best Score First
+    roots.sort(key=lambda x: (x.get('score', 0) or 0), reverse=True)
     return roots
 
 def render_comment_tree(nodes, depth=0, user=None, on_reply=None, active_reply_id=None, on_submit_reply=None, cancel_reply=None, highlight_cutoff=None):
@@ -845,7 +942,19 @@ def render_comment_tree(nodes, depth=0, user=None, on_reply=None, active_reply_i
                 name = prof.get('full_name') or prof.get('username') or 'Anonymous'
                 ui.label(name).classes('text-xs font-bold text-slate-700')
                 
-                date_str = c.get('created_at', '')[:10]
+                date_str = c.get('created_at', '')
+                try:
+                    # ISO Format usually T separated
+                    if 'T' in date_str:
+                         dt_part = date_str.split('T')
+                         date_val = dt_part[0]
+                         time_val = dt_part[1][:5] # HH:MM
+                         date_str = f"{date_val} {time_val}"
+                    else:
+                         date_str = date_str[:16] # Fallback
+                except:
+                    pass
+                
                 label_cls = 'text-[10px] text-slate-400 font-medium'
                 if is_new:
                     label_cls = 'text-[10px] text-amber-600 font-bold'
@@ -861,15 +970,25 @@ def render_comment_tree(nodes, depth=0, user=None, on_reply=None, active_reply_i
                 current_vote = c.get('user_vote') or 0
                 current_score = c.get('score') or 0
                 
+                # Check for self-voting
+                is_author = user and str(user.get('id')) == str(c.get('user_id'))
+                
                 # Create UI Elements
-                up_btn = ui.button(icon='arrow_upward').props('flat dense round size=xs')
+                up_btn = None
+                down_btn = None
+                
+                if not is_author:
+                    up_btn = ui.button(icon='arrow_upward').props('flat dense round size=xs')
+                
                 score_lbl = ui.label(str(current_score)).classes('text-xs font-bold text-slate-600 min-w-[12px] text-center')
-                down_btn = ui.button(icon='arrow_downward').props('flat dense round size=xs')
+                
+                if not is_author:
+                    down_btn = ui.button(icon='arrow_downward').props('flat dense round size=xs')
 
                 # Update function for this specific comment's UI
                 def update_vote_ui(vote, score, btn_up, btn_down, lbl):
-                    btn_up.props(f'color={"teal-600" if vote == 1 else "slate-300"}')
-                    btn_down.props(f'color={"red-400" if vote == -1 else "slate-300"}')
+                    if btn_up: btn_up.props(f'color={"teal-600" if vote == 1 else "slate-300"}')
+                    if btn_down: btn_down.props(f'color={"red-400" if vote == -1 else "slate-300"}')
                     lbl.text = str(score)
 
                 # Initialize UI
@@ -895,8 +1014,8 @@ def render_comment_tree(nodes, depth=0, user=None, on_reply=None, active_reply_i
                      
                      # Optimistic UI Update? 
                      # No, let's wait for DB for consistency, or do optimistic if slow.
-                     # Let's do DB first.
-                     success = await run.io_bound(database.vote_comment, user['id'], cid, new_vote)
+                     # Use io_bound to avoid blocking
+                     success = await run.io_bound(database.vote_comment, user['id'], cid, new_vote, access_token=get_user_token())
                      if success:
                          # Calculate new score locally to avoid full re-fetch
                          # Delta calculation
@@ -909,8 +1028,10 @@ def render_comment_tree(nodes, depth=0, user=None, on_reply=None, active_reply_i
                 # Bind clicks
                 # Fix: Capture the local handle_vote_click instance as a default argument 'h' 
                 # to prevent all buttons using the last iteration's function
-                up_btn.on('click', lambda h=handle_vote_click: h(1))
-                down_btn.on('click', lambda h=handle_vote_click: h(-1))
+                
+                if not is_author:
+                    up_btn.on('click', lambda h=handle_vote_click: h(1))
+                    down_btn.on('click', lambda h=handle_vote_click: h(-1))
 
                 # Reply Button
                 if user:
@@ -927,9 +1048,9 @@ def render_comment_tree(nodes, depth=0, user=None, on_reply=None, active_reply_i
                         'rows=2 auto-grow outlined flat class="text-sm bg-white"').classes('w-full')
                     reply_input.run_method('focus')
                     
-                    async def submit_inline():
+                    async def submit_inline(cid=c['id']):
                         if on_submit_reply:
-                            await on_submit_reply(c['id'], reply_input.value)
+                            await on_submit_reply(cid, reply_input.value)
                     
                     reply_input.on('keydown.enter.prevent', submit_inline)
                     
@@ -957,9 +1078,9 @@ def open_comment_modal(paper, user_obj, on_view=None):
              prev_last_viewed_at = paper.get('saved_at')
         
         # Mark as viewed when opening comments
-        if user_obj and paper.get('id'):
-             # We don't check _is_saved here to save a query, the DB function handles it safely
-             database.mark_paper_viewed(user_obj['id'], paper['id'])
+        if user_obj and paper.get('_is_saved') and not paper.get('_viewed_session'):
+             database.mark_paper_viewed(user_obj['id'], paper['id'], access_token=get_user_token())
+             paper['_viewed_session'] = True
              # Optimistic local update so if we go back to menu, badge might be gone (requires re-render usually)
              paper['new_comments_count'] = 0
              
@@ -1009,88 +1130,97 @@ def open_comment_modal(paper, user_obj, on_view=None):
                             ui.markdown(str(imps)).classes('text-sm leading-snug')
 
             # Right Panel: Discussion (Scrollable)
-            content_area = ui.column().classes('w-2/3 h-full overflow-y-auto p-6 gap-6')
+            # Added overscroll-contain to prevent scrolling the parent page when reaching the end
+            comments_container = ui.column().classes('w-2/3 h-full overflow-y-auto p-6 gap-6 overscroll-contain')
         
         # State
         reply_ctx = {'id': None}
         active_reply_id = None
         
         async def refresh_list():
-            content_area.clear()
+            comments_container.clear()
             # Pass user_id for vote status
             uid = auth.get_current_user().get('id') if auth.get_current_user() else None
-            comments = await run.io_bound(database.get_comments, paper['id'], uid)
             
-            with content_area:
-                # 1. Main Input (Top)
-                user = auth.get_current_user() # Refresh user state
-                
-                with ui.column().classes('w-full items-stretch gap-2 mb-4'):
-                     with ui.row().classes('items-center gap-2 mb-1'):
-                        if user:
-                            avatar = user.get('avatar_url') or user.get('metadata', {}).get('avatar_url')
-                            if avatar:
-                                ui.image(avatar).classes('w-6 h-6 rounded-full object-cover border border-slate-200 shadow-sm')
+            try:
+                if paper.get('id'):
+                    comments = await run.io_bound(database.get_comments, paper['id'], uid, access_token=get_user_token())
+                    
+                    with comments_container:
+                        # 1. Main Input (Top)
+                        user = auth.get_current_user() # Refresh user state
+                        
+                        with ui.column().classes('w-full items-stretch gap-2 mb-4'):
+                            with ui.row().classes('items-center gap-2 mb-1'):
+                                if user:
+                                    avatar = user.get('avatar_url') or user.get('metadata', {}).get('avatar_url')
+                                    if avatar:
+                                        ui.image(avatar).classes('w-6 h-6 rounded-full object-cover border border-slate-200 shadow-sm')
+                                    else:
+                                        ui.icon('account_circle', size='sm').classes('text-slate-300')
+                                    ui.label('Join the conversation').classes('text-xs font-bold text-slate-500 uppercase tracking-widest')
+                                else:
+                                    ui.icon('lock', size='sm').classes('text-slate-300')
+                                    ui.label('Login to comment').classes('text-xs font-bold text-slate-400 uppercase tracking-widest')
+                            
+                            if user:
+                                c_input = ui.textarea(placeholder='Write a comment...').props(
+                                    'rows=2 auto-grow outlined flat class="text-sm"').classes('w-full bg-slate-50 rounded-lg')
+                                
+                                async def submit_main():
+                                    if not c_input.value or not c_input.value.strip(): return
+                                    await run.io_bound(database.add_comment, user['id'], paper['id'], c_input.value, None, access_token=get_user_token())
+                                    c_input.value = ''
+                                    await refresh_list()
+                                
+                                c_input.on('keydown.enter.prevent', submit_main)
+                                with ui.row().classes('w-full justify-end mt-2'):
+                                    ui.button('Post', icon='send', on_click=submit_main).props(
+                                        'unelevated no-caps color=teal-600 text-color=white dense').classes('px-4 rounded-full font-bold')
                             else:
-                                ui.icon('account_circle', size='sm').classes('text-slate-300')
-                            ui.label('Join the conversation').classes('text-xs font-bold text-slate-500 uppercase tracking-widest')
+                                ui.textarea(placeholder='Login to share your thoughts').props(
+                                    'disable rows=2 outlined flat class="text-sm"').classes('w-full opacity-60 bg-slate-50 rounded-lg')
+                        
+                        ui.separator().classes('my-4 opacity-30')
+                        
+                        # 2. List
+                        if not comments:
+                            ui.label('No comments yet. Be the first!').classes('text-xs text-slate-400 italic pl-2')
                         else:
-                            ui.icon('lock', size='sm').classes('text-slate-300')
-                            ui.label('Login to comment').classes('text-xs font-bold text-slate-400 uppercase tracking-widest')
-                     
-                     if user:
-                        c_input = ui.textarea(placeholder='Write a comment...').props(
-                            'rows=2 auto-grow outlined flat class="text-sm"').classes('w-full bg-slate-50 rounded-lg')
-                        
-                        async def submit_main():
-                            if not c_input.value or not c_input.value.strip(): return
-                            await run.io_bound(database.add_comment, user['id'], paper['id'], c_input.value, None)
-                            await refresh_list()
-                        
-                        c_input.on('keydown.enter.prevent', submit_main)
-                        with ui.row().classes('w-full justify-end mt-2'):
-                            ui.button('Post', icon='send', on_click=submit_main).props(
-                                'unelevated no-caps color=teal-600 text-color=white dense').classes('px-4 rounded-full font-bold')
-                     else:
-                        ui.textarea(placeholder='Login to share your thoughts').props(
-                            'disable rows=2 outlined flat class="text-sm"').classes('w-full opacity-60 bg-slate-50 rounded-lg')
-                
-                ui.separator().classes('my-4 opacity-30')
-                
-                # 2. List
-                if not comments:
-                     ui.label('No comments yet. Be the first!').classes('text-xs text-slate-400 italic pl-2')
-                else:
-                    roots = build_comment_tree(comments)
-                    
-                    # Callbacks
-                    async def on_reply_click(cid, cname):
-                         nonlocal active_reply_id
-                         active_reply_id = cid
-                         await refresh_list()
-                    
-                    async def on_cancel_reply():
-                         nonlocal active_reply_id
-                         active_reply_id = None
-                         await refresh_list()
-                         
-                    async def on_submit_reply(pid, content):
-                         if not content or not content.strip(): return
-                         nonlocal active_reply_id
-                         await run.io_bound(database.add_comment, user['id'], paper['id'], content, pid)
-                         active_reply_id = None
-                         await refresh_list()
-                         
-                    render_comment_tree(roots, user=user, on_reply=on_reply_click, active_reply_id=active_reply_id, on_submit_reply=on_submit_reply, cancel_reply=on_cancel_reply, highlight_cutoff=prev_last_viewed_at)
+                            roots = build_comment_tree(comments)
+                            
+                            # Callbacks
+                            async def on_reply_click(cid, cname):
+                                nonlocal active_reply_id
+                                active_reply_id = cid
+                                await refresh_list()
+                            
+                            async def on_cancel_reply():
+                                nonlocal active_reply_id
+                                active_reply_id = None
+                                await refresh_list()
+                                
+                            async def on_submit_reply(pid, content):
+                                if not content or not content.strip(): return
+                                nonlocal active_reply_id
+                                await run.io_bound(database.add_comment, user['id'], paper['id'], content, pid, access_token=get_user_token())
+                                active_reply_id = None
+                                await refresh_list()
+                                
+                            render_comment_tree(roots, user=user, on_reply=on_reply_click, active_reply_id=active_reply_id, on_submit_reply=on_submit_reply, cancel_reply=on_cancel_reply, highlight_cutoff=prev_last_viewed_at)
+            except Exception as e:
+                print(f"Error refreshing comments: {e}")
+                with comments_container:
+                    ui.label('Error loading comments.').classes('text-negative')
 
         # Initial Load
         ui.timer(0.1, refresh_list, once=True)
 
 
 @ui.page('/topic/{topic_name}')
-def topic_pages(topic_name: str):
-    # Set return path for login - REMOVED
-    # app.storage.user['referrer_path'] = f'/topic/{topic_name}'
+def topic_pages(topic_name: str, request: Request):
+    # Set return path for login
+    app.storage.user['referrer_path'] = f'/topic/{topic_name}'
 
     ui.add_head_html('''
     <style>
@@ -1205,14 +1335,14 @@ def topic_pages(topic_name: str):
         # Scenario A: New Paper -> Always Reset
         if paper['id'] != last_paper_id:
             if i_scroll_area:
-                i_scroll_area.scroll_to(percent=0.0, duration=0)
+                i_scroll_area.run_method('scrollTo', 0, 0)
             last_paper_id = paper['id']
             last_hover_time = current_time
             
         # Scenario B: Same Paper, but "Long" Absence -> Reset
         elif (current_time - last_hover_time) > 5.0:
             if i_scroll_area:
-                i_scroll_area.scroll_to(percent=0.0, duration=0)
+                i_scroll_area.run_method('scrollTo', 0, 0)
             last_hover_time = current_time
         else:
             # Short absence -> maintain scroll, update timestamp
@@ -1280,13 +1410,6 @@ def topic_pages(topic_name: str):
 
                     
 
-
-
-
-
-                
-
-
                             
  
 
@@ -1310,11 +1433,13 @@ def topic_pages(topic_name: str):
                     ui.icon('inbox', size='48px').classes('mb-4')
                     ui.label('No papers found yet.').classes('text-lg')
             return
+        
+        current_user = auth.get_current_user()
         if feed_grid:
             with feed_grid:
                 for paper in papers:
                     display_curated_card(feed_grid, paper, on_hover=update_inspector,
-                                         on_leave=lambda: start_reset_timer(), on_click=toggle_pin)
+                                         on_leave=lambda: start_reset_timer(), on_click=toggle_pin, user=current_user)
 
     def load_topic_feed(topic):
         nonlocal pinned_paper
@@ -1361,7 +1486,7 @@ def topic_pages(topic_name: str):
                         i_score = ui.badge(
                             '0/10', color='teal').props('outline size=md')
 
-                with ui.scroll_area().classes('w-full p-6 flex-grow') as i_scroll_area:
+                with ui.column().classes('w-full p-6 flex-grow overflow-y-auto overscroll-contain') as i_scroll_area:
                     i_title = ui.html('Paper Title', sanitize=False).classes(
                         'text-lg font-black text-slate-800 leading-snug mb-2')
                     
@@ -1395,7 +1520,20 @@ def topic_pages(topic_name: str):
             # REMOVED RESET BUTTON
         feed_grid = ui.grid(columns=2).classes('w-full gap-4')
 
-    ui.timer(0.1, lambda: load_topic_feed(topic_name), once=True)
+    async def init_load():
+        load_topic_feed(topic_name)
+        
+        # Deep Link Logic
+        deep_pid = request.query_params.get('open_comments')
+        if deep_pid:
+             user = auth.get_current_user()
+             uid = user['id'] if user else None
+             # Fetch paper to ensure we have full details for modal
+             p = await run.io_bound(database.get_paper_by_id, deep_pid, uid, access_token=get_user_token())
+             if p:
+                 open_comment_modal(p, user)
+
+    ui.timer(0.1, init_load, once=True)
 
 
 
@@ -1503,14 +1641,14 @@ def saved_papers_page():
         # Scenario A: New Paper -> Always Reset
         if paper['id'] != last_paper_id:
             if i_scroll_area:
-                i_scroll_area.scroll_to(percent=0.0, duration=0)
+                i_scroll_area.run_method('scrollTo', 0, 0)
             last_paper_id = paper['id']
             last_hover_time = current_time
             
         # Scenario B: Same Paper, but "Long" Absence -> Reset
         elif (current_time - last_hover_time) > 5.0:
             if i_scroll_area:
-                i_scroll_area.scroll_to(percent=0.0, duration=0)
+                i_scroll_area.run_method('scrollTo', 0, 0)
             last_hover_time = current_time
         else:
             # Short absence -> maintain scroll, update timestamp
@@ -1622,7 +1760,7 @@ def saved_papers_page():
                         i_score = ui.badge(
                             '0/10', color='teal').props('outline size=md')
 
-                with ui.scroll_area().classes('w-full p-6 flex-grow') as i_scroll_area:
+                with ui.column().classes('w-full p-6 flex-grow overflow-y-auto overscroll-contain') as i_scroll_area:
                     i_title = ui.html('Paper Title', sanitize=False).classes(
                         'text-lg font-black text-slate-800 leading-snug mb-2')
                     
@@ -1655,7 +1793,7 @@ def saved_papers_page():
     
     def render_library():
         library_container.clear()
-        favorites = database.get_favorites(user['id'])
+        favorites = database.get_favorites(user['id'], access_token=get_user_token())
         
         with library_container:
             with ui.row().classes('w-full items-center justify-between mb-4'):
@@ -1668,7 +1806,7 @@ def saved_papers_page():
                 total_notifications = sum(p.get('new_comments_count', 0) for p in favorites)
                 if total_notifications > 0:
                     async def clear_all_notifications():
-                        database.mark_all_papers_viewed(user['id'])
+                        database.mark_all_papers_viewed(user['id'], access_token=get_user_token())
                         ui.notify('All notifications cleared!', type='positive')
                         render_library()
                     
@@ -1704,7 +1842,8 @@ def saved_papers_page():
                              display_curated_card(w, p, on_hover=update_inspector,
                                                   on_leave=lambda: start_reset_timer(), 
                                                   on_click=toggle_pin,
-                                                  on_unfavorite=lambda _: handle_remove_paper(p, w))
+                                                  on_unfavorite=lambda _: handle_remove_paper(p, w),
+                                                  user=user)
                         make_card(paper, wrapper)
     
     # Initial Render
@@ -1722,7 +1861,8 @@ def profile_page():
         return
 
     # Fetch profile
-    profile = database.get_profile(user['id']) or {}
+    token = get_user_token()
+    profile = database.get_profile(user['id'], access_token=token) or {}
     
     with ui.column().classes('w-full min-h-screen bg-slate-50 p-8 items-center'):
         with ui.card().classes('w-full max-w-2xl p-8 gap-6'):
@@ -1848,18 +1988,26 @@ def profile_page():
                                     ui.button('Save Avatar', on_click=save_crop).classes('bg-slate-900 text-white')
                         
                         crop_dialog.open()
+                        await run.io_bound(lambda: time.sleep(0.5)) # Give DOM a moment to render the image
+                        
                         # Initialize Cropper JS
-                        await ui.run_javascript('''
-                            if (window.cropper) { window.cropper.destroy(); }
-                            var image = document.getElementById('avatar-cropper-img');
-                            window.cropper = new Cropper(image, {
-                                aspectRatio: 1,
-                                viewMode: 0, 
-                                dragMode: 'move',
-                                autoCropArea: 1,
-                                background: false
-                            });
-                        ''', timeout=10.0)
+                        # Increased timeout to avoid flakiness on slower clients
+                        try:
+                            await ui.run_javascript('''
+                                if (window.cropper) { window.cropper.destroy(); }
+                                var image = document.getElementById('avatar-cropper-img');
+                                if (image) {
+                                    window.cropper = new Cropper(image, {
+                                        aspectRatio: 1,
+                                        viewMode: 0, 
+                                        dragMode: 'move',
+                                        autoCropArea: 1,
+                                        background: false
+                                    });
+                                }
+                            ''', timeout=30.0)
+                        except Exception as e:
+                            print(f"JS Cropper Init Warning: {e}")
 
                     # Avatar Circle
                     with ui.button(on_click=lambda: uploader.run_method('pickFiles')).props('round flat p-0').classes('overflow-hidden w-12 h-12 border-2 border-slate-200'):
@@ -1896,7 +2044,7 @@ def profile_page():
                         'full_name': fullname.value,
                         'updated_at': 'now()'
                     }
-                    res = database.update_profile(user['id'], updates)
+                    res = database.update_profile(user['id'], updates, access_token=get_user_token())
                     if res:
                          ui.notify('Profile updated!', type='positive')
                     else:
