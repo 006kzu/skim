@@ -6,7 +6,14 @@ import os
 
 # Define the callback URL (adjust for production if needed)
 # For local dev: http://localhost:8080/auth/callback
-CALLBACK_URL = f"{os.environ.get('SITE_URL', 'http://localhost:8080')}/auth/callback"
+
+def get_site_url():
+    url = os.environ.get('SITE_URL', 'http://localhost:8080').strip().strip('"').strip("'")
+    if not url.startswith('http'):
+        url = f"https://{url}"
+    return url.rstrip('/')
+
+CALLBACK_URL = f"{get_site_url()}/auth/callback"
 
 def login_with_google():
     """Initiates the Google OAuth flow."""
@@ -15,6 +22,9 @@ def login_with_google():
     if not client:
         ui.notify("Database connection missing!", type='negative')
         return
+
+    print(f"DEBUG: ENV SITE_URL: '{os.environ.get('SITE_URL')}'")
+    print(f"DEBUG: Final CALLBACK_URL: '{CALLBACK_URL}'")
 
     data = client.auth.sign_in_with_oauth({
         "provider": "google",
