@@ -10,9 +10,8 @@ key = os.environ.get("SUPABASE_KEY")
 
 # Initialize Client
 if url and key:
-    # Fix for 'Storage endpoint URL should have a trailing slash'
-    if not url.endswith("/"):
-        url += "/"
+    # Remove trailing slash to prevent double-slash errors in API calls
+    url = url.rstrip("/")
     print(f"DEBUG: Connecting to Supabase Project: {url}")
     _admin_client: Client = create_client(url, key)
 else:
@@ -113,6 +112,7 @@ def get_papers_by_topic(topic, limit=20, access_token=None):
     """Fetches papers for a specific topic."""
     client = get_client(access_token)
     if not client:
+        print("DEBUG: Client is None in get_papers_by_topic - Check Env Vars")
         return []
 
     try:
@@ -122,9 +122,10 @@ def get_papers_by_topic(topic, limit=20, access_token=None):
             .order("date_added", desc=True) \
             .limit(limit) \
             .execute()
+        print(f"DEBUG: Found {len(response.data)} papers for topic '{topic}'")
         return response.data
     except Exception as e:
-        print(f"Error fetching topic: {e}")
+        print(f"DEBUG: Error fetching topic '{topic}': {e}")
         return []
 
 
