@@ -12,14 +12,13 @@ key = os.environ.get("SUPABASE_KEY")
 if url and key:
     # Remove trailing slash to prevent double-slash errors in API calls
     url = url.rstrip("/")
-    print(f"DEBUG: Connecting to Supabase Project: {url}")
     _admin_client: Client = create_client(url, key)
 else:
     _admin_client = None
     print("⚠️ WARNING: Supabase keys not found. Database features will fail.")
 
 # Common columns to fetch (Excludes potentially heavy embeddings or raw data)
-PAPER_COLUMNS = "id, title, summary, score, url, link, authors, date_added, topic, category, citations, influential_citation_count, key_findings, implications, title_highlights, year, venue"
+PAPER_COLUMNS = "id, title, summary, score, url, authors, date_added, topic, category, key_findings, implications, title_highlights, date, journal"
 
 
 def get_client(access_token=None):
@@ -112,7 +111,6 @@ def get_papers_by_topic(topic, limit=20, access_token=None):
     """Fetches papers for a specific topic."""
     client = get_client(access_token)
     if not client:
-        print("DEBUG: Client is None in get_papers_by_topic - Check Env Vars")
         return []
 
     try:
@@ -122,10 +120,9 @@ def get_papers_by_topic(topic, limit=20, access_token=None):
             .order("date_added", desc=True) \
             .limit(limit) \
             .execute()
-        print(f"DEBUG: Found {len(response.data)} papers for topic '{topic}'")
         return response.data
     except Exception as e:
-        print(f"DEBUG: Error fetching topic '{topic}': {e}")
+        print(f"Error fetching topic '{topic}': {e}")
         return []
 
 
@@ -148,40 +145,7 @@ def get_top_rated_papers(limit=8, access_token=None):
         return []
 
 
-# --- NEW FUNCTIONS ADDED FOR REPAIR SCRIPT ---
 
-def get_all_papers_raw():
-    """Fetches all papers to check for missing fields."""
-    if not supabase:
-        print("❌ Error: Supabase client is not initialized.")
-        return []
-    try:
-        # Select all columns
-        response = supabase.table("papers").select("*").execute()
-        return response.data
-    except Exception as e:
-        print(f"❌ Error fetching all papers: {e}")
-        return []
-
-
-def update_paper(paper_id, update_data, access_token=None):
-    """Updates a specific paper record by its unique ID."""
-    client = get_client(access_token)
-    if not client:
-        return
-    try:
-        response = client.table("papers").update(
-            update_data).eq("id", paper_id).execute()
-
-        # 🚨 CHECK: Did we actually update anything?
-        if len(response.data) > 0:
-            print(
-                f"   ✅ DB Updated: {update_data.get('title', 'Paper')[:20]}...")
-        else:
-            print(f"   ⚠️ UPDATE IGNORED (0 rows): Check your .env permissions (RLS)!")
-
-    except Exception as e:
-        print(f"   ❌ Update Failed for ID {paper_id}: {e}")
 
 # --- USER & PROFILE FUNCTIONS ---
 

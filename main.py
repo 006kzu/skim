@@ -714,9 +714,8 @@ def dashboard():
             res = client.table("papers").select(
                 database.PAPER_COLUMNS).order("date_added", desc=True).limit(8).execute()
             recent_papers = res.data
-            print(f"DEBUG: Dashboard found {len(recent_papers)} papers.")
         except Exception as e:
-            print(f"DEBUG: Error fetching recent papers: {e}")
+            print(f"Error fetching recent papers: {e}")
 
     def go_topic(t):
         ui.navigate.to(f'/topic/{t}')

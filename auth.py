@@ -23,8 +23,7 @@ def login_with_google():
         ui.notify("Database connection missing!", type='negative')
         return
 
-    print(f"DEBUG: ENV SITE_URL: '{os.environ.get('SITE_URL')}'")
-    print(f"DEBUG: Final CALLBACK_URL: '{CALLBACK_URL}'")
+
 
     data = client.auth.sign_in_with_oauth({
         "provider": "google",
