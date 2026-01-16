@@ -19,7 +19,7 @@ else:
     print("⚠️ WARNING: Supabase keys not found. Database features will fail.")
 
 # Common columns to fetch (Excludes potentially heavy embeddings or raw data)
-PAPER_COLUMNS = "id, title, summary, score, url, link, authors, date_added, topic, key_findings, implications, title_highlights, year, venue"
+PAPER_COLUMNS = "id, title, summary, score, url, link, authors, date_added, topic, category, citations, influential_citation_count, key_findings, implications, title_highlights, year, venue"
 
 
 def get_client(access_token=None):
