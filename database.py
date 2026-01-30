@@ -145,6 +145,52 @@ def get_top_rated_papers(limit=8, access_token=None):
         return []
 
 
+def search_papers(query, limit=20, access_token=None):
+    """
+    Searches papers using Full Text Search (FTS).
+    Requires 'fts' column and index on 'papers' table.
+    """
+    client = get_client(access_token)
+    if not client:
+        return []
+    try:
+        # Method 1: RPC call (Best performance/relevance sorting)
+        try:
+             res = client.rpc('search_papers_fts', {'query_text': query}).limit(limit).execute()
+             return res.data
+        except:
+             # Fallback to simple ILIKE search if FTS not set up yet
+             print("⚠️ FTS RPC failed (maybe script not run), falling back to ILIKE.")
+             res = client.table("papers") \
+                .select(PAPER_COLUMNS) \
+                .ilike("title", f"%{query}%") \
+                .limit(limit) \
+                .execute()
+             return res.data
+             
+    except Exception as e:
+        print(f"Error searching papers: {e}")
+        return []
+
+
+def get_recent_papers(limit=20, access_token=None):
+    """Fetches the newest papers added to the database."""
+    client = get_client(access_token)
+    if not client:
+        return []
+
+    try:
+        response = client.table("papers") \
+            .select(PAPER_COLUMNS) \
+            .order("date_added", desc=True) \
+            .limit(limit) \
+            .execute()
+        return response.data
+    except Exception as e:
+        print(f"Error fetching recent papers: {e}")
+        return []
+
+
 
 
 # --- USER & PROFILE FUNCTIONS ---
@@ -191,7 +237,7 @@ def create_profile(user_id, metadata, email=None, access_token=None):
         print(f"Error creating profile: {e}")
         return None
 
-def update_profile(user_id, updates, access_token=None):
+def update_profile(user_id, updates, access_token=None, raise_error=False):
     """Updates user profile."""
     client = get_client(access_token)
     if not client:
@@ -200,6 +246,8 @@ def update_profile(user_id, updates, access_token=None):
         res = client.table("profiles").update(updates).eq("id", user_id).execute()
         return res.data
     except Exception as e:
+        if raise_error:
+            raise e
         print(f"Error updating profile: {e}")
         return None
 

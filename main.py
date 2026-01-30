@@ -438,8 +438,8 @@ def header(on_topic_click=None, on_home_click=None, on_search=None, current_path
                 search_input.props('prepend-inner-icon=search')
 
                 def handle_search():
-                    if on_search and search_input.value:
-                        on_search(search_input.value)
+                    if search_input.value:
+                        ui.navigate.to(f'/search?q={search_input.value}')
                 search_input.on('keydown.enter', handle_search)
 
             with ui.row().classes('items-center gap-4 min-w-max'):
@@ -525,6 +525,9 @@ def header(on_topic_click=None, on_home_click=None, on_search=None, current_path
                     ui.timer(1.0, update_notifications, once=True) # Initial load
                     ui.timer(30.0, update_notifications) # Refresh every 30 seconds
 
+                ui.button('New', on_click=lambda: ui.navigate.to('/new')).props('unelevated no-caps color=teal-600 text-color=white size=md').classes(
+                    'font-bold tracking-tight rounded-lg px-4 shadow-md hover:scale-105 transition-transform')
+
                 hub_btn = ui.button('Research Hub', icon='apps').props('flat no-caps color=slate-800 size=md icon-right=arrow_drop_down').classes(
                     'font-bold tracking-tight bg-slate-100 hover:bg-slate-200 rounded-lg px-3')
 
@@ -595,19 +598,84 @@ def header(on_topic_click=None, on_home_click=None, on_search=None, current_path
                             u_input = ui.input('Username').classes('w-full mb-6')
                             
                             async def save_initial_username():
-                                if not u_input.value or len(u_input.value) < 3:
+                                raw_username = u_input.value
+                                if not raw_username:
+                                    ui.notify('Please enter a username.', type='negative')
+                                    return
+                                    
+                                clean_username = raw_username.strip()
+                                
+                                if len(clean_username) < 3:
                                     ui.notify('Username must be at least 3 characters.', type='negative')
                                     return
                                 
-                                database.update_profile(user['id'], {'username': u_input.value}, access_token=get_user_token())
-                                # We check if it stuck
-                                p_check = database.get_profile(user['id'], access_token=get_user_token())
-                                if p_check and p_check.get('username') == u_input.value:
-                                     ui.notify(f'Welcome, {u_input.value}!', type='positive')
-                                     username_dialog.close()
-                                     ui.navigate.to(app.storage.user.get('referrer_path', '/'), new_tab=False)
-                                else:
-                                     ui.notify('Error: Username taken or invalid.', type='negative')
+                                if not re.match(r"^[a-zA-Z0-9_]+$", clean_username):
+                                    ui.notify('Username can only contain letters, numbers, and underscores.', type='negative')
+                                    return
+
+                                try:
+                                    # Try to update existing profile
+                                    # We use raise_error=True so we can catch "username taken"
+                                    # Note: If no profile exists, update returns empty list but doesn't raise error usually,
+                                    # unless the strict constraint is hit or RLS issues. 
+                                    # Actually, supabase-py .execute() typically returns data.
+                                    # If 'raise_error' is True in our wrapper, it raises on Exceptions (like Unique Violation).
+                                    
+                                    res = await run.io_bound(
+                                        database.update_profile, 
+                                        user['id'], 
+                                        {'username': clean_username}, 
+                                        access_token=get_user_token(),
+                                        raise_error=True
+                                    )
+                                    
+                                    # If res is empty or None, it might mean the profile row does not exist 
+                                    # (e.g. signup trigger failed).
+                                    if not res:
+                                        # Attempt creation
+                                        print("DEBUG: Profile update returned nothing, attempting creation.")
+                                        created_res = await run.io_bound(
+                                            database.create_profile,
+                                            user['id'], 
+                                            user.get('metadata', {}), 
+                                            email=user.get('email'), 
+                                            access_token=get_user_token()
+                                        )
+                                        # Now update the username explicitly if create didn't set it correctly (it uses metadata)
+                                        # But let's just assume we might need to set it again or create with it.
+                                        # Actually create_profile extracts username from metadata. 
+                                        # Let's force update it again to be sure if create succeeded.
+                                        if created_res:
+                                            await run.io_bound(
+                                                database.update_profile,
+                                                user['id'],
+                                                {'username': clean_username},
+                                                access_token=get_user_token(),
+                                                raise_error=True
+                                            )
+                                            res = created_res # Pretend success
+                                
+                                    # Double check result
+                                    p_check = await run.io_bound(database.get_profile, user['id'], access_token=get_user_token())
+                                    if p_check and p_check.get('username') == clean_username:
+                                         ui.notify(f'Welcome, {clean_username}!', type='positive')
+                                         username_dialog.close()
+                                         # Update session immediately just in case
+                                         if 'user' in app.storage.user:
+                                             # We can't easily update top-level session here without reloading usually, 
+                                             # but let's try to let the next page load handle it.
+                                             pass
+                                         ui.navigate.to(app.storage.user.get('referrer_path', '/'), new_tab=False)
+                                    else:
+                                         ui.notify('Error: Could not save username. Please try again.', type='negative')
+
+                                except Exception as e:
+                                    err_str = str(e).lower()
+                                    if "unique" in err_str or "duplicate" in err_str:
+                                        ui.notify(f"Username '{clean_username}' is already taken.", type='negative')
+                                    else:
+                                        print(f"Username save error: {e}")
+                                        ui.notify('An unexpected error occurred.', type='negative')
 
                             ui.button('Continue', on_click=save_initial_username).classes('w-full bg-slate-900 text-white')
                         username_dialog.open()
@@ -657,7 +725,7 @@ def header(on_topic_click=None, on_home_click=None, on_search=None, current_path
                                 ui.button('Log In', on_click=handle_login).classes('w-full mb-2 bg-slate-900 text-white')
                                 ui.separator().classes('my-4')
                                 ui.button('Continue with Google', icon='img:/assets/google_logo.png', on_click=auth.login_with_google).props('outline color=slate-600').classes('w-full mb-2')
-                                ui.button('Continue with X', icon='img:/assets/x_logo.png', on_click=auth.login_with_twitter).props('outline color=slate-950 text-color=slate-900').classes('w-full')
+
 
                             with ui.tab_panel(signup_tab):
                                 r_name = ui.input('Full Name').classes('w-full mb-2')
@@ -689,6 +757,137 @@ def header(on_topic_click=None, on_home_click=None, on_search=None, current_path
                         auth_dialog.open()
                     
                     ui.button('Log In/Sign Up', on_click=open_auth_dialog).props('unelevated color=slate-900 text-color=white size=md rounded').classes('font-bold tracking-wide px-6')
+
+
+# --- FOCUS PAGE ---
+@ui.page('/paper/{pid}')
+def paper_page(pid: str):
+    user = auth.get_current_user()
+    app.storage.user['referrer_path'] = f'/paper/{pid}'
+    
+    paper = database.get_paper_by_id(pid, user['id'] if user else None)
+    
+    # Common navigation handlers
+    def go_topic(t): ui.navigate.to(f'/topic/{t}')
+    def go_home(): ui.navigate.to('/')
+    
+    header(on_topic_click=go_topic, on_home_click=go_home, current_path=f'/paper/{pid}')
+    
+    if not paper:
+        with ui.column().classes('w-full min-h-screen items-center justify-center bg-slate-50'):
+             ui.label('Paper not found').classes('text-2xl text-slate-400 font-bold')
+             ui.button('Go Home', on_click=go_home).props('flat')
+        return
+
+    theme = get_impact_theme(paper)
+    
+    with ui.column().classes('w-full min-h-[calc(100vh-80px)] items-center justify-start py-12 bg-slate-50'):
+        with ui.card().classes(f"w-full max-w-4xl p-8 {theme['card_bg']} rounded-2xl shadow-xl"):
+            # Header Section
+            with ui.row().classes('w-full justify-between items-start mb-6'):
+                 with ui.row().classes('items-center gap-4'):
+                     render_smart_icon(paper.get('category'), 'w-20 h-20')
+                     with ui.column().classes('gap-1'):
+                         ui.label(paper.get('category')).classes(f"text-sm font-black uppercase tracking-wider {theme['accent_color']}")
+                         ui.label(paper.get('date', '')).classes(f"text-xs {theme['text_meta']}")
+                 
+                 # Score
+                 ui.label(f"{paper.get('score', '?')}/10").classes(f"text-4xl font-black {theme['score_color']}")
+            
+            # Title
+            title_text = paper.get('title', 'Untitled')
+            highlights = paper.get('title_highlights') or []
+            processed = highlight_title(title_text, highlights, theme['highlight_hex'])
+            ui.html(processed).classes(f"text-3xl font-black leading-tight mb-6 {theme['text_title']}")
+            
+            # Key Findings
+            if paper.get('key_findings'):
+                ui.label('KEY FINDINGS').classes('text-xs font-bold text-slate-400 uppercase tracking-wider mb-2')
+                for f in paper.get('key_findings', []):
+                     ui.label(f"• {f}").classes(f"ml-4 mb-1 {theme['text_body']} font-medium")
+                ui.separator().classes('my-6 opacity-30')
+
+            # Abstract
+            ui.label('ABSTRACT').classes('text-xs font-bold text-slate-400 uppercase tracking-wider mb-2')
+            ui.markdown(paper.get('summary', '')).classes(f"text-base leading-relaxed {theme['text_body']} mb-6")
+            
+            # Implications
+            if paper.get('implications'):
+                ui.separator().classes('my-6 opacity-30')
+                ui.label('IMPLICATIONS').classes('text-xs font-bold text-slate-400 uppercase tracking-wider mb-2')
+                imps = paper.get('implications', [])
+                if isinstance(imps, list):
+                    for imp in imps:
+                         ui.label(f"➔ {imp}").classes(f"ml-4 mb-1 {theme['text_body']}")
+                else:
+                    ui.markdown(str(imps)).classes(theme['text_body'])
+
+            ui.separator().classes('my-8 opacity-30')
+            
+            # Actions
+            with ui.row().classes('w-full justify-between items-center'):
+                 ui.label(f"Authors: {', '.join(paper.get('authors', [])) if isinstance(paper.get('authors'), list) else paper.get('authors')}").classes('text-sm text-slate-500 italic')
+                 
+                 with ui.row().classes('gap-4'):
+                      url = paper.get('url') or paper.get('link')
+                      if url:
+                          ui.button('Read Source', icon='open_in_new').props('outline color=slate-400').on('click', lambda: ui.navigate.to(url, new_tab=True))
+                      
+                      # Comment/Discuss
+                      ui.button('Discussion', icon='forum', on_click=lambda: open_comment_modal(paper, user)).props('unelevated color=teal-600')
+
+
+# --- NEW PAPERS PAGE ---
+@ui.page('/new')
+def new_papers_page():
+    app.storage.user['referrer_path'] = '/new'
+    header(on_topic_click=lambda t: ui.navigate.to(f'/topic/{t}'), 
+           on_home_click=lambda: ui.navigate.to('/'), current_path='/new')
+    
+    papers = database.get_recent_papers(20)
+    
+    with ui.column().classes('w-full min-h-[calc(100vh-80px)] bg-slate-50 p-6 items-center'):
+         ui.label('Hot off the Press').classes('text-4xl font-black text-slate-900 mb-2')
+         ui.label('The latest research added to the platform').classes('text-slate-500 mb-8')
+         
+         with ui.grid(columns=3).classes('w-full max-w-7xl gap-6') as grid:
+              for paper in papers:
+                  display_curated_card(grid, paper, 
+                      on_click=lambda p: ui.navigate.to(f'/paper/{p["id"]}'),
+                      user=auth.get_current_user())
+                  # Note: We pass ui.context.client as container which likely works if grid was entered, 
+                  # but display_curated_card uses 'with container:'. 
+                  # The grid is already active in 'with ui.grid', so we can pass 'place' or nothing?
+                  # Actually display_curated_card expects a container object.
+                  # Since we are inside the 'with ui.grid', passing the grid object itself is safer if we captured it,
+                  # OR we can just pass the context.
+                  # Ideally:
+                  pass
+
+# --- SEARCH PAGE ---
+@ui.page('/search')
+def search_page(q: str = ''):
+    app.storage.user['referrer_path'] = f'/search?q={q}'
+    header(on_topic_click=lambda t: ui.navigate.to(f'/topic/{t}'), 
+           on_home_click=lambda: ui.navigate.to('/'), current_path='/search')
+    
+    with ui.column().classes('w-full min-h-[calc(100vh-80px)] bg-slate-50 p-6 items-center'):
+         if not q:
+             ui.label('Enter a search term above.').classes('text-xl text-slate-400 mt-12')
+             return
+
+         papers = database.search_papers(q, 20)
+         
+         ui.label(f"Search results for '{q}'").classes('text-2xl font-bold text-slate-800 mb-6')
+         
+         if not papers:
+             ui.label('No results found.').classes('text-lg text-slate-500 italic')
+         else:
+             with ui.grid(columns=3).classes('w-full max-w-7xl gap-6') as grid:
+                  for paper in papers:
+                      display_curated_card(grid, paper, 
+                          on_click=lambda p: ui.navigate.to(f'/paper/{p["id"]}'),
+                          user=auth.get_current_user())
 
 
 # --- ROOT DASHBOARD (CAROUSEL + IMPACT GUIDE) ---
