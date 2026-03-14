@@ -1069,7 +1069,7 @@ def dashboard():
                               'text-slate-600 font-medium leading-relaxed max-w-2xl text-base')
                           
                           with ui.row().classes('w-full items-center gap-4 mt-4 bg-slate-50 p-4 rounded-xl border border-slate-100'):
-                              ui.label("If you find Skim useful please consider donating to a broke college kid to help pay for AI api calls and ramen ;)").classes(
+                              ui.label("If you find Skim useful please consider tipping a broke college kid to help pay for AI api calls and ramen ;)").classes(
                                   'text-slate-500 font-bold text-sm italic')
                               ui.button('Support the Developer', icon='coffee', on_click=lambda: ui.navigate.to('https://ko-fi.com/thomaszrm', new_tab=True)).props(
                                   'unelevated color=slate-900 text-color=white rounded-lg').classes('font-bold')
